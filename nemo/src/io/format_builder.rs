@@ -516,6 +516,7 @@ impl ImportExportBuilder {
         self.resource.clone()
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn new_with_tag<B: FormatBuilder>(
         predicate: Tag,
         tag: B::Tag,

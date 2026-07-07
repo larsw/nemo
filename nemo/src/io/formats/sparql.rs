@@ -296,7 +296,7 @@ impl ImportHandler for SparqlHandler {
 
 #[cfg(test)]
 mod test {
-    use std::{collections::HashMap, str::FromStr};
+    use std::str::FromStr;
 
     use crate::{
         parser::{
@@ -307,7 +307,7 @@ mod test {
         rule_model::translation::directive::FormatContext,
     };
     use nom::combinator::all_consuming;
-    use oxiri::{Iri, IriRef};
+    use oxiri::Iri;
 
     use crate::io::format_builder::FormatParameter;
     use nemo_physical::datavalues::AnyDataValue;
@@ -316,8 +316,6 @@ mod test {
 
     #[test]
     fn parse_query() {
-        let base = Some(Iri::from_str("http://www.wikidata.org/").unwrap());
-
         let mut format_context = FormatContext::default();
         format_context.add_base("http://www.wikidata.org/".to_string());
         // PREFIX wikibase: <http://wikiba.se/ontology#>

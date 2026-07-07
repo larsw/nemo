@@ -136,7 +136,7 @@ fn handle_prefix<'a>(
     translation: &mut ASTProgramTranslation,
     prefix: &ast::directive::prefix::Prefix<'a>,
 ) {
-    if (|| {
+    let parse_prefix = || {
         let rel_prefix = IriRef::parse(prefix.iri().content())?;
         if rel_prefix.is_absolute() {
             return Ok::<(), Box<dyn std::error::Error>>(());
@@ -147,9 +147,9 @@ fn handle_prefix<'a>(
             return Ok::<(), Box<dyn std::error::Error>>(());
         }
         Err(Box::new(TranslationError::PrefixInvalid))
-    })()
-    .is_err()
-    {
+    };
+
+    if parse_prefix().is_err() {
         // parsing not successful
         translation
             .report
@@ -180,7 +180,7 @@ pub struct FormatContext {
 }
 
 impl FormatContext {
-    /// Returns an optional base IRI
+    /// Returns the base IRI if set
     pub fn base(&self) -> &Option<Iri<String>> {
         &self.base
     }
@@ -208,15 +208,13 @@ impl FormatContext {
     pub fn add_prefix(&mut self, prefix: String, iri: String) {
         let rel_prefix = IriRef::parse(iri.clone()).expect("not a valid Iri");
         let abs_prefix = if rel_prefix.is_absolute() {
-            Iri::parse(iri.clone()).expect("absolute IRI is not absolute")
+            Iri::parse(iri.clone()).expect("IRI is absolute")
         } else {
             if let Some(base) = &self.base {
                 base.resolve(&rel_prefix.clone())
-                    .expect("relative prefix not resolvable on base")
+                    .expect("relative prefix can be resolved on base")
             } else {
-                panic!(
-                    "Relative base without prefixes! This should have been cought by the translator!"
-                )
+                unreachable!()
             }
         };
 

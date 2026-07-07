@@ -296,7 +296,6 @@ impl ImportHandler for SparqlHandler {
 
 #[cfg(test)]
 mod test {
-    use std::str::FromStr;
 
     use crate::{
         parser::{
@@ -307,7 +306,6 @@ mod test {
         rule_model::translation::directive::FormatContext,
     };
     use nom::combinator::all_consuming;
-    use oxiri::Iri;
 
     use crate::io::format_builder::FormatParameter;
     use nemo_physical::datavalues::AnyDataValue;

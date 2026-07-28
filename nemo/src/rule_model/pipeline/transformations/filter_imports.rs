@@ -246,16 +246,15 @@ fn push_projections_and_filters(import: &mut ImportDirective, filter_rules: &[&R
                 .next()
                 .expect("import rules have exactly one body atom");
             let head_variables = rule.head()[0].variables().collect::<HashSet<_>>();
+            // Every variable an operation mentions keeps its column alive, not
+            // just the ones an assignment binds. A variable used only by a
+            // boolean filter (`STRSTARTS(?v, "…")`) still has to be read: the
+            // filter is pushed into the import alongside this projection, so
+            // skipping its column leaves the filter referring to a column that
+            // was never imported.
             let binding_variables = rule
                 .body_operations()
-                .filter_map(|operation| {
-                    if operation.variable_assignment().is_some() {
-                        Some(operation.variables())
-                    } else {
-                        None
-                    }
-                })
-                .flatten()
+                .flat_map(|operation| operation.variables())
                 .collect::<HashSet<_>>();
 
             positions.resize(max(positions.len(), body.terms().count()), false);
@@ -294,6 +293,13 @@ fn push_projections_and_filters(import: &mut ImportDirective, filter_rules: &[&R
 
                 // now figure out which rules we need to keep
                 for (idx, rule) in rules.iter().enumerate() {
+                    // A rule carrying operations is not a pure projection: its
+                    // filters/assignments still have to be applied somewhere.
+                    // Dropping it here would discard them silently.
+                    if rule.body_operations().next().is_some() {
+                        continue;
+                    }
+
                     if rule.head()[0].terms().any(|term| !term.is_variable())
                         || rule.body()[0].terms().any(|term| !term.is_variable())
                     {
@@ -322,7 +328,9 @@ fn push_projections_and_filters(import: &mut ImportDirective, filter_rules: &[&R
             }
         }
 
-        for idx in obsolete_rules {
+        // Reverse order: `obsolete_rules` is collected ascending, and removing
+        // a lower index first shifts every later one.
+        for idx in obsolete_rules.into_iter().rev() {
             rules.remove(idx);
         }
     }

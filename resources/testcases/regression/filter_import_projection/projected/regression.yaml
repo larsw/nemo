@@ -1,0 +1,4 @@
+issue: 792
+title: filtered variable projected away: used to panic
+tracker: https://github.com/knowsys/nemo/issues/792
+type: bug

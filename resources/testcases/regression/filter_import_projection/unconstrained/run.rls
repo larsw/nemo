@@ -1,0 +1,19 @@
+%%% Test related to
+%%% https://github.com/knowsys/nemo/issues/792
+%%%
+%%% A rule over an imported predicate has its projection and its filters
+%%% pushed into the import. A variable used only by a filter was not counted
+%%% as "used", so its column was skipped while the filter that reads it was
+%%% pushed into the same import; and a rule whose head and body are all
+%%% variables was removed as a pure projection, discarding its filters.
+%%%
+%%% body atom without constants: filter used to be dropped
+%%%
+%%% Note: one rule per test case on purpose. Several rules with different head
+%%% predicates disable the import pushdown altogether, which hides the bug.
+
+@import triple :- ntriples{resource = "sources/data.nt"} .
+
+unconstrained(?v) :- triple(?s, ?p, ?v), STRSTARTS(?v, "al") .
+
+@export unconstrained :- csv {} .

@@ -255,4 +255,35 @@ mod test {
         let stratums = graph.stratify(&[EdgeLabel::Negative]);
         assert!(stratums.is_none());
     }
+
+    #[test]
+    fn not_stratified_self_loop() {
+        let mut graph = LabeledGraph::<String, EdgeLabel, Directed>::default();
+
+        let node_a = String::from("A");
+
+        graph.add_edge(node_a.clone(), node_a, EdgeLabel::Negative);
+
+        let stratums = graph.stratify(&[EdgeLabel::Negative]);
+        assert!(stratums.is_none());
+    }
+
+    #[test]
+    fn stratification_isolated_nodes() {
+        let mut graph = LabeledGraph::<String, EdgeLabel, Directed>::default();
+
+        let node_a = String::from("A");
+        let node_b = String::from("B");
+        let node_c = String::from("C");
+
+        graph.add_node(node_a.clone());
+        graph.add_edge(node_b.clone(), node_c.clone(), EdgeLabel::Negative);
+
+        let mut stratums = graph.stratify(&[EdgeLabel::Negative]).unwrap();
+        for stratum in &mut stratums {
+            stratum.sort();
+        }
+
+        assert_eq!(stratums, vec![vec![node_a, node_b], vec![node_c]]);
+    }
 }

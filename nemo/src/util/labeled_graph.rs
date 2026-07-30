@@ -77,7 +77,7 @@ where
     /// meaning that every component is preceded by the components it depends on.
     ///
     /// We distinguish between strong and weak edges.
-    /// Strong edges must be respected, while weak edges merely express a preference. 
+    /// Strong edges must be respected, while weak edges merely express a preference.
     ///
     /// Components that do not depend on each other are ordered by the node
     /// that was added to the graph first.

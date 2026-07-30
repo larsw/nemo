@@ -508,9 +508,6 @@ b(?x) :- a(?x).";
     async fn issue_759() {
         const ITERATIONS: usize = 32_768;
 
-        // Only setting up the engine is repeated,
-        // since parsing and validating the program would dominate the runtime
-        // without contributing anything to what is tested here.
         let file = RuleFile::new("foo(bar).".to_string(), Default::default());
         let parameters = ExecutionParameters::default();
         let program = ProgramHandle::from_file(&file)

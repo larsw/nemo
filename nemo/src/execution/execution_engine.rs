@@ -470,6 +470,10 @@ mod test {
     use crate::{
         execution::{DefaultExecutionEngine, execution_parameters::ExecutionParameters},
         rule_file::RuleFile,
+        rule_model::{
+            pipeline::transformations::default::TransformationDefault,
+            programs::handle::ProgramHandle,
+        },
     };
 
     #[tokio::test]
@@ -505,11 +509,19 @@ b(?x) :- a(?x).";
         const ITERATIONS: usize = 32_768;
 
         let file = RuleFile::new("foo(bar).".to_string(), Default::default());
+        let parameters = ExecutionParameters::default();
+        let program = ProgramHandle::from_file(&file)
+            .expect("program parses")
+            .into_object()
+            .transform(TransformationDefault::new(&parameters))
+            .expect("program is valid");
 
         for _ in 1..=ITERATIONS {
-            let engine =
-                DefaultExecutionEngine::from_file(file.clone(), ExecutionParameters::default())
-                    .await;
+            let engine = DefaultExecutionEngine::from_handle(
+                program.clone(),
+                ExecutionParameters::default(),
+            )
+            .await;
             assert_matches!(engine, Ok(_));
         }
     }

@@ -347,6 +347,15 @@ impl NormalizedRule {
             .map(|atom| (atom.predicate(), atom.arity()))
     }
 
+    /// Return an iterator over all predicates occurring in a head atom
+    /// that contains an existential variable.
+    pub fn predicates_head_existential(&self) -> impl Iterator<Item = (Tag, usize)> {
+        self.head
+            .iter()
+            .filter(|atom| atom.variables_existential().next().is_some())
+            .map(|atom| (atom.predicate(), atom.arity()))
+    }
+
     /// Return an iterator over predicates used in this rule
     /// together with their arities.
     pub fn predicates(&self) -> impl Iterator<Item = (Tag, usize)> {

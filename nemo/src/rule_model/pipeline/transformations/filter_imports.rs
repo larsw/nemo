@@ -226,7 +226,8 @@ impl ProgramTransformation for TransformationFilterImports {
 }
 
 fn push_projections_and_filters(import: &mut ImportDirective, filter_rules: &[&Rule]) {
-    let mut rules = filter_rules.to_owned();
+    let rules = filter_rules.to_owned();
+    let mut obsolete_rules = HashSet::new();
 
     // can we push projections?
     let format = import.spec().format().to_string();
@@ -238,7 +239,6 @@ fn push_projections_and_filters(import: &mut ImportDirective, filter_rules: &[&R
 
         // All head predicates of all rules are the same
         let mut positions = Vec::new();
-        let mut obsolete_rules = Vec::new();
 
         for rule in &rules {
             let body = rule
@@ -246,13 +246,8 @@ fn push_projections_and_filters(import: &mut ImportDirective, filter_rules: &[&R
                 .next()
                 .expect("import rules have exactly one body atom");
             let head_variables = rule.head()[0].variables().collect::<HashSet<_>>();
-            // Every variable an operation mentions keeps its column alive, not
-            // just the ones an assignment binds. A variable used only by a
-            // boolean filter (`STRSTARTS(?v, "…")`) still has to be read: the
-            // filter is pushed into the import alongside this projection, so
-            // skipping its column leaves the filter referring to a column that
-            // was never imported.
-            let binding_variables = rule
+            // Variables in operations can generate bindings or appear in filters, keep them.
+            let operation_variables = rule
                 .body_operations()
                 .flat_map(|operation| operation.variables())
                 .collect::<HashSet<_>>();
@@ -260,12 +255,15 @@ fn push_projections_and_filters(import: &mut ImportDirective, filter_rules: &[&R
             positions.resize(max(positions.len(), body.terms().count()), false);
 
             for (position, term) in body.terms().enumerate() {
-                if let Term::Primitive(Primitive::Variable(variable)) = term
-                    && (head_variables.contains(variable) || binding_variables.contains(variable))
-                {
-                    positions[position] = true;
-                } else if let Term::Primitive(Primitive::Ground(_)) = term {
-                    positions[position] = true;
+                positions[position] = match term {
+                    Term::Primitive(Primitive::Variable(variable))
+                        if (head_variables.contains(variable)
+                            || operation_variables.contains(variable)) =>
+                    {
+                        true
+                    }
+                    Term::Primitive(Primitive::Ground(_)) => true,
+                    _ => positions[position],
                 }
             }
 
@@ -293,14 +291,9 @@ fn push_projections_and_filters(import: &mut ImportDirective, filter_rules: &[&R
 
                 // now figure out which rules we need to keep
                 for (idx, rule) in rules.iter().enumerate() {
-                    // A rule carrying operations is not a pure projection: its
-                    // filters/assignments still have to be applied somewhere.
-                    // Dropping it here would discard them silently.
-                    if rule.body_operations().next().is_some() {
-                        continue;
-                    }
-
-                    if rule.head()[0].terms().any(|term| !term.is_variable())
+                    // keep the rule if we have operations (i.e., filters or assignments), or non-variables in head or body
+                    if rule.body_operations().next().is_some()
+                        || rule.head()[0].terms().any(|term| !term.is_variable())
                         || rule.body()[0].terms().any(|term| !term.is_variable())
                     {
                         continue;
@@ -323,19 +316,17 @@ fn push_projections_and_filters(import: &mut ImportDirective, filter_rules: &[&R
                         continue;
                     }
 
-                    obsolete_rules.push(idx);
+                    obsolete_rules.insert(idx);
                 }
             }
         }
-
-        // Reverse order: `obsolete_rules` is collected ascending, and removing
-        // a lower index first shifts every later one.
-        for idx in obsolete_rules.into_iter().rev() {
-            rules.remove(idx);
-        }
     }
 
-    for &rule in rules.iter() {
+    for (idx, &rule) in rules.iter().enumerate() {
+        if obsolete_rules.contains(&idx) {
+            continue;
+        }
+
         import.add_filter_rule(rule.clone());
     }
 }

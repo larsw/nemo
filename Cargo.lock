@@ -1680,7 +1680,7 @@ dependencies = [
 
 [[package]]
 name = "nemo"
-version = "0.10.1"
+version = "0.10.2-dev"
 dependencies = [
  "ariadne",
  "ascii_tree",
@@ -1726,7 +1726,7 @@ dependencies = [
 
 [[package]]
 name = "nemo-cli"
-version = "0.10.1"
+version = "0.10.2-dev"
 dependencies = [
  "ariadne",
  "assert_cmd",
@@ -1747,7 +1747,7 @@ dependencies = [
 
 [[package]]
 name = "nemo-language-server"
-version = "0.10.1"
+version = "0.10.2-dev"
 dependencies = [
  "anyhow",
  "futures",
@@ -1763,7 +1763,7 @@ dependencies = [
 
 [[package]]
 name = "nemo-physical"
-version = "0.10.1"
+version = "0.10.2-dev"
 dependencies = [
  "ascii_tree",
  "async-trait",
@@ -1800,7 +1800,7 @@ dependencies = [
 
 [[package]]
 name = "nemo-python"
-version = "0.10.1"
+version = "0.10.2-dev"
 dependencies = [
  "nemo",
  "pyo3",
@@ -1809,7 +1809,7 @@ dependencies = [
 
 [[package]]
 name = "nemo-wasm"
-version = "0.10.1"
+version = "0.10.2-dev"
 dependencies = [
  "async-trait",
  "console_error_panic_hook",
@@ -3967,7 +3967,7 @@ checksum = "3ae8337f8a065cfc972643663ea4279e04e7256de865aa66fe25cec5fb912d3f"
 
 [[package]]
 name = "xtask"
-version = "0.10.1"
+version = "0.10.2-dev"
 dependencies = [
  "cargo-util-schemas",
  "cargo_metadata",

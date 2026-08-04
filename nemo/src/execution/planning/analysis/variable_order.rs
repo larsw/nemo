@@ -167,12 +167,26 @@ impl std::fmt::Debug for VariableOrder {
     }
 }
 
-#[derive(Debug)]
+// The variants not listed in `ITERATION_ORDERS` are unused, but kept so that computing
+// several variable orders per rule can be reactivated by extending that list.
+#[allow(dead_code)]
+#[derive(Debug, Clone, Copy)]
 enum IterationOrder {
     Forward,
     Backward,
     InsideOut,
 }
+
+/// The [IterationOrder]s used to generate variable orders.
+///
+/// Every entry produces one variable order per rule, and the distinct results are
+/// collected. Only one order per rule is ever used, however, so computing more than one
+/// is wasted work; [IterationOrder::Backward] is the variant that was effectively
+/// selected back when all three were computed.
+///
+/// Listing several entries again is all that is needed to reactivate the comparison
+/// of multiple orders.
+const ITERATION_ORDERS: &[IterationOrder] = &[IterationOrder::Backward];
 
 impl IterationOrder {
     fn get_permutator(&self, len: usize) -> Permutator {
@@ -561,12 +575,6 @@ pub(crate) fn build_preferable_variable_orders(
     program: &NormalizedProgram,
     initial_column_orders: Option<HashMap<Tag, HashSet<ColumnOrder>>>,
 ) -> BuilderResultVariants {
-    let iteration_orders = [
-        IterationOrder::Forward,
-        IterationOrder::Backward,
-        IterationOrder::InsideOut,
-    ];
-
     let initial_column_orders = initial_column_orders.unwrap_or_else(|| {
         let mut result: HashMap<Tag, HashSet<Permutation>> = Default::default();
         for fact in program.facts().iter() {
@@ -584,7 +592,7 @@ pub(crate) fn build_preferable_variable_orders(
     let mut all_variable_orders = vec![Vec::<VariableOrder>::new(); program.rules().len()];
     let mut all_column_orders = Vec::new();
 
-    for iteration_order in iteration_orders {
+    for &iteration_order in ITERATION_ORDERS {
         let BuilderResult {
             variable_orders,
             column_orders,
@@ -841,18 +849,11 @@ mod test {
         }
 
         let rule_vars = &var_lists[0];
-        let rule_var_orders: Vec<VariableOrder> = vec![
-            VariableOrder::from_vec(vec![
-                rule_vars[1].clone(),
-                rule_vars[0].clone(),
-                rule_vars[2].clone(),
-            ]),
-            VariableOrder::from_vec(vec![
-                rule_vars[1].clone(),
-                rule_vars[2].clone(),
-                rule_vars[0].clone(),
-            ]),
-        ];
+        let rule_var_orders: Vec<VariableOrder> = vec![VariableOrder::from_vec(vec![
+            rule_vars[1].clone(),
+            rule_vars[2].clone(),
+            rule_vars[0].clone(),
+        ])];
 
         assert_eq!(
             vec![rule_var_orders],
@@ -873,18 +874,11 @@ mod test {
         }
 
         let rule_vars = &var_lists[0];
-        let rule_var_orders: Vec<VariableOrder> = vec![
-            VariableOrder::from_vec(vec![
-                rule_vars[1].clone(),
-                rule_vars[0].clone(),
-                rule_vars[2].clone(),
-            ]),
-            VariableOrder::from_vec(vec![
-                rule_vars[1].clone(),
-                rule_vars[2].clone(),
-                rule_vars[0].clone(),
-            ]),
-        ];
+        let rule_var_orders: Vec<VariableOrder> = vec![VariableOrder::from_vec(vec![
+            rule_vars[1].clone(),
+            rule_vars[2].clone(),
+            rule_vars[0].clone(),
+        ])];
 
         assert_eq!(
             vec![rule_var_orders],
@@ -913,18 +907,11 @@ mod test {
             rule_1_vars[2].clone(),
         ])];
         let rule_2_vars = &var_lists[1];
-        let rule_2_var_orders: Vec<VariableOrder> = vec![
-            VariableOrder::from_vec(vec![
-                rule_2_vars[1].clone(),
-                rule_2_vars[0].clone(),
-                rule_2_vars[2].clone(),
-            ]),
-            VariableOrder::from_vec(vec![
-                rule_2_vars[1].clone(),
-                rule_2_vars[2].clone(),
-                rule_2_vars[0].clone(),
-            ]),
-        ];
+        let rule_2_var_orders: Vec<VariableOrder> = vec![VariableOrder::from_vec(vec![
+            rule_2_vars[1].clone(),
+            rule_2_vars[2].clone(),
+            rule_2_vars[0].clone(),
+        ])];
 
         assert_eq!(
             vec![rule_1_var_orders, rule_2_var_orders],
@@ -1077,20 +1064,12 @@ mod test {
             rule_3_vars[3].clone(),
         ])];
         let rule_4_vars = &var_lists[3];
-        let rule_4_var_orders: Vec<VariableOrder> = vec![
-            VariableOrder::from_vec(vec![
-                rule_4_vars[0].clone(),
-                rule_4_vars[1].clone(),
-                rule_4_vars[2].clone(),
-                rule_4_vars[3].clone(),
-            ]),
-            VariableOrder::from_vec(vec![
-                rule_4_vars[0].clone(),
-                rule_4_vars[2].clone(),
-                rule_4_vars[1].clone(),
-                rule_4_vars[3].clone(),
-            ]),
-        ];
+        let rule_4_var_orders: Vec<VariableOrder> = vec![VariableOrder::from_vec(vec![
+            rule_4_vars[0].clone(),
+            rule_4_vars[2].clone(),
+            rule_4_vars[1].clone(),
+            rule_4_vars[3].clone(),
+        ])];
         let rule_5_vars = &var_lists[4];
         let rule_5_var_orders: Vec<VariableOrder> = vec![VariableOrder::from_vec(vec![
             rule_5_vars[0].clone(),
@@ -1367,20 +1346,12 @@ mod test {
             rule_3_vars[3].clone(),
         ])];
         let rule_4_vars = &var_lists[3];
-        let rule_4_var_orders: Vec<VariableOrder> = vec![
-            VariableOrder::from_vec(vec![
-                rule_4_vars[0].clone(),
-                rule_4_vars[1].clone(),
-                rule_4_vars[2].clone(),
-                rule_4_vars[3].clone(),
-            ]),
-            VariableOrder::from_vec(vec![
-                rule_4_vars[0].clone(),
-                rule_4_vars[2].clone(),
-                rule_4_vars[1].clone(),
-                rule_4_vars[3].clone(),
-            ]),
-        ];
+        let rule_4_var_orders: Vec<VariableOrder> = vec![VariableOrder::from_vec(vec![
+            rule_4_vars[0].clone(),
+            rule_4_vars[2].clone(),
+            rule_4_vars[1].clone(),
+            rule_4_vars[3].clone(),
+        ])];
         let rule_5_vars = &var_lists[4];
         let rule_5_var_orders: Vec<VariableOrder> = vec![VariableOrder::from_vec(vec![
             rule_5_vars[1].clone(),
@@ -1396,20 +1367,12 @@ mod test {
             rule_6_vars[0].clone(),
         ])];
         let rule_7_vars = &var_lists[6];
-        let rule_7_var_orders: Vec<VariableOrder> = vec![
-            VariableOrder::from_vec(vec![
-                rule_7_vars[1].clone(),
-                rule_7_vars[0].clone(),
-                rule_7_vars[2].clone(),
-                rule_7_vars[3].clone(),
-            ]),
-            VariableOrder::from_vec(vec![
-                rule_7_vars[1].clone(),
-                rule_7_vars[0].clone(),
-                rule_7_vars[3].clone(),
-                rule_7_vars[2].clone(),
-            ]),
-        ];
+        let rule_7_var_orders: Vec<VariableOrder> = vec![VariableOrder::from_vec(vec![
+            rule_7_vars[1].clone(),
+            rule_7_vars[0].clone(),
+            rule_7_vars[3].clone(),
+            rule_7_vars[2].clone(),
+        ])];
         let rule_8_vars = &var_lists[7];
         let rule_8_var_orders: Vec<VariableOrder> = vec![VariableOrder::from_vec(vec![
             rule_8_vars[0].clone(),
@@ -1424,28 +1387,16 @@ mod test {
             rule_9_vars[0].clone(),
         ])];
         let rule_10_vars = &var_lists[9];
-        let rule_10_var_orders: Vec<VariableOrder> = vec![
-            VariableOrder::from_vec(vec![
-                rule_10_vars[0].clone(),
-                rule_10_vars[1].clone(),
-                rule_10_vars[4].clone(),
-                rule_10_vars[2].clone(),
-                rule_10_vars[3].clone(),
-                rule_10_vars[5].clone(),
-                rule_10_vars[6].clone(),
-                rule_10_vars[7].clone(),
-            ]),
-            VariableOrder::from_vec(vec![
-                rule_10_vars[0].clone(),
-                rule_10_vars[4].clone(),
-                rule_10_vars[1].clone(),
-                rule_10_vars[3].clone(),
-                rule_10_vars[2].clone(),
-                rule_10_vars[5].clone(),
-                rule_10_vars[6].clone(),
-                rule_10_vars[7].clone(),
-            ]),
-        ];
+        let rule_10_var_orders: Vec<VariableOrder> = vec![VariableOrder::from_vec(vec![
+            rule_10_vars[0].clone(),
+            rule_10_vars[4].clone(),
+            rule_10_vars[1].clone(),
+            rule_10_vars[3].clone(),
+            rule_10_vars[2].clone(),
+            rule_10_vars[5].clone(),
+            rule_10_vars[6].clone(),
+            rule_10_vars[7].clone(),
+        ])];
         let rule_11_vars = &var_lists[10];
         let rule_11_var_orders: Vec<VariableOrder> = vec![VariableOrder::from_vec(vec![
             rule_11_vars[0].clone(),
@@ -1453,10 +1404,10 @@ mod test {
             rule_11_vars[2].clone(),
         ])];
         let rule_12_vars = &var_lists[11];
-        let rule_12_var_orders: Vec<VariableOrder> = vec![
-            VariableOrder::from_vec(vec![rule_12_vars[0].clone(), rule_12_vars[1].clone()]),
-            VariableOrder::from_vec(vec![rule_12_vars[1].clone(), rule_12_vars[0].clone()]),
-        ];
+        let rule_12_var_orders: Vec<VariableOrder> = vec![VariableOrder::from_vec(vec![
+            rule_12_vars[1].clone(),
+            rule_12_vars[0].clone(),
+        ])];
 
         assert_eq!(
             vec![

@@ -167,8 +167,6 @@ impl std::fmt::Debug for VariableOrder {
     }
 }
 
-// The variants not listed in `ITERATION_ORDERS` are unused, but kept so that computing
-// several variable orders per rule can be reactivated by extending that list.
 #[allow(dead_code)]
 #[derive(Debug, Clone, Copy)]
 enum IterationOrder {
@@ -179,13 +177,8 @@ enum IterationOrder {
 
 /// The [IterationOrder]s used to generate variable orders.
 ///
-/// Every entry produces one variable order per rule, and the distinct results are
-/// collected. Only one order per rule is ever used, however, so computing more than one
-/// is wasted work; [IterationOrder::Backward] is the variant that was effectively
-/// selected back when all three were computed.
-///
-/// Listing several entries again is all that is needed to reactivate the comparison
-/// of multiple orders.
+/// Every entry produces one variable order per rule, 
+/// and the distinct results are collected.
 const ITERATION_ORDERS: &[IterationOrder] = &[IterationOrder::Backward];
 
 impl IterationOrder {

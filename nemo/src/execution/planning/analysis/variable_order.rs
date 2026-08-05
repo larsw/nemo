@@ -177,7 +177,7 @@ enum IterationOrder {
 
 /// The [IterationOrder]s used to generate variable orders.
 ///
-/// Every entry produces one variable order per rule, 
+/// Every entry produces one variable order per rule,
 /// and the distinct results are collected.
 const ITERATION_ORDERS: &[IterationOrder] = &[IterationOrder::Backward];
 

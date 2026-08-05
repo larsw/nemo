@@ -116,7 +116,7 @@ impl<Strategy: RuleSelectionStrategy> ExecutionEngine<Strategy> {
             let rule = self.chase_program().rules()[rule_index].clone();
             for negative_atom in rule.negative() {
                 let rows =
-                    if let Ok(Some(rows)) = self.predicate_rows(&negative_atom.predicate()).await {
+                    if let Ok(Some(rows)) = self.predicate_rows(negative_atom.predicate()).await {
                         rows.collect::<Vec<_>>()
                     } else {
                         Vec::default()
@@ -126,7 +126,7 @@ impl<Strategy: RuleSelectionStrategy> ExecutionEngine<Strategy> {
                 for row in rows {
                     let (entry_id, _step) = self
                         .table_manager
-                        .table_row_id(&negative_atom.predicate(), &row)
+                        .table_row_id(negative_atom.predicate(), &row)
                         .await
                         .expect("row should be contained somewhere");
 
@@ -167,8 +167,8 @@ impl<Strategy: RuleSelectionStrategy> ExecutionEngine<Strategy> {
             .zip(grounding.iter().cloned())
             .collect();
 
-        for (body_index, body_atom) in rule.positive_all().iter().enumerate() {
-            let next_fact_predicate = body_atom.predicate();
+        for (body_index, body_atom) in rule.positive_all().enumerate() {
+            let next_fact_predicate = body_atom.predicate().clone();
             let next_fact_terms = body_atom
                 .terms()
                 .map(|variable| {
@@ -343,7 +343,7 @@ impl<Strategy: RuleSelectionStrategy> ExecutionEngine<Strategy> {
                     Vec::new();
                     self.chase_program().rules()[rule_index]
                         .positive_all()
-                        .len()
+                        .count()
                 ];
 
                 for groundings in results {
@@ -392,7 +392,7 @@ impl<Strategy: RuleSelectionStrategy> ExecutionEngine<Strategy> {
                         Vec::new();
                         self.chase_program().rules()[rule_index]
                             .positive_all()
-                            .len()
+                            .count()
                     ];
 
                     for grounding in groundings {

@@ -118,7 +118,6 @@ impl<Strategy: RuleSelectionStrategy> ExecutionEngine<Strategy> {
 
             for (index, (atom, node_atom)) in rule
                 .positive_all()
-                .iter()
                 .zip(successor.children.iter())
                 .enumerate()
             {
@@ -129,7 +128,7 @@ impl<Strategy: RuleSelectionStrategy> ExecutionEngine<Strategy> {
                     manager,
                     node_atom,
                     next_address,
-                    &atom.predicate(),
+                    atom.predicate(),
                     program,
                 ))
                 .await?;
@@ -179,7 +178,6 @@ impl<Strategy: RuleSelectionStrategy> ExecutionEngine<Strategy> {
 
             for (index, (atom, node_atom)) in rule
                 .positive_all()
-                .iter()
                 .zip(successor.children.iter())
                 .enumerate()
             {
@@ -200,7 +198,7 @@ impl<Strategy: RuleSelectionStrategy> ExecutionEngine<Strategy> {
                     manager,
                     node_atom,
                     next_address,
-                    &atom.predicate(),
+                    atom.predicate(),
                     &discarded_columns,
                     next_step,
                     program,
@@ -368,7 +366,6 @@ impl<Strategy: RuleSelectionStrategy> ExecutionEngine<Strategy> {
 
             for (index, (atom, node_atom)) in rule
                 .positive_all()
-                .iter()
                 .zip(successor.children.iter())
                 .enumerate()
             {
@@ -604,7 +601,7 @@ impl<Strategy: RuleSelectionStrategy> ExecutionEngine<Strategy> {
                     elements,
                     child,
                     next_address,
-                    &next_predicate,
+                    next_predicate,
                 ))
                 .await?;
             }
@@ -614,10 +611,10 @@ impl<Strategy: RuleSelectionStrategy> ExecutionEngine<Strategy> {
 
             for (index, negative_atom) in rule.negative().iter().enumerate() {
                 let mut next_address = address.clone();
-                next_address.push(rule.positive_all().len() + index);
+                next_address.push(rule.positive_all().count() + index);
 
                 let rows =
-                    if let Some(rows) = self.predicate_rows(&negative_atom.predicate()).await? {
+                    if let Some(rows) = self.predicate_rows(negative_atom.predicate()).await? {
                         rows.collect::<Vec<_>>()
                     } else {
                         Vec::default()
@@ -628,7 +625,7 @@ impl<Strategy: RuleSelectionStrategy> ExecutionEngine<Strategy> {
                 for row in rows {
                     let (entry_id, _step) = self
                         .table_manager
-                        .table_row_id(&negative_atom.predicate(), &row)
+                        .table_row_id(negative_atom.predicate(), &row)
                         .await
                         .expect("rows has been filled from tables and therefore must have an id");
 
@@ -703,5 +700,5 @@ impl<Strategy: RuleSelectionStrategy> ExecutionEngine<Strategy> {
 fn rule_is_simple(program: &NormalizedProgram, rule: &NormalizedRule) -> bool {
     rule.positive()
         .iter()
-        .all(|atom| program.rules_with_head_predicate(&atom.predicate()).count() <= 1)
+        .all(|atom| program.rules_with_head_predicate(atom.predicate()).count() <= 1)
 }

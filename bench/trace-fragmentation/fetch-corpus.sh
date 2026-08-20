@@ -13,7 +13,7 @@ CORPUS_DIR="${CORPUS_DIR:-$HERE/corpus}"
 
 # Biomappings: a public, actively maintained SSSOM mapping set with the CURIE
 # map in its header. Any SSSOM TSV works; override with --from-file.
-SOURCE_URL="${SOURCE_URL:-https://raw.githubusercontent.com/biopragmatics/biomappings/master/exports/sssom/biomappings.sssom.tsv}"
+SOURCE_URL="${SOURCE_URL:-https://raw.githubusercontent.com/biopragmatics/biomappings/master/export/biomappings.sssom.tsv}"
 
 # Scales. Small ones exist so a first pass finishes quickly and so the
 # fragmentation factor can be seen as a function of corpus size, not just at one

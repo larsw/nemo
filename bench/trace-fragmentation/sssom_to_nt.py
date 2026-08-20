@@ -86,6 +86,55 @@ def expand(curie: str, prefixes: dict[str, str]) -> str | None:
     return OBO_TEMPLATE.format(prefix=prefix, local=local)
 
 
+def scale_by_components(triples: list[tuple[str, str, str]], budget: int):
+    """Select whole connected components, largest first, up to an edge budget.
+
+    Taking the first N rows instead does not work and produces a silently
+    useless corpus: SSSOM files are grouped by subject, so a prefix of one is
+    bipartite -- measured at zero nodes appearing as both subject and object
+    across 2k and 20k row slices of biomappings. With no such pivot node, no
+    transitivity or role-chain rule in sssom-chain.rls can fire, the closure
+    derives nothing, and the experiment measures nothing.
+
+    Components are computed on the UNDIRECTED graph, because the role-chain
+    rules traverse mappings in both directions.
+    """
+    parent: dict[str, str] = {}
+
+    def find(node: str) -> str:
+        parent.setdefault(node, node)
+        root = node
+        while parent[root] != root:
+            root = parent[root]
+        while parent[node] != root:  # path compression
+            parent[node], node = root, parent[node]
+        return root
+
+    def union(a: str, b: str) -> None:
+        ra, rb = find(a), find(b)
+        if ra != rb:
+            parent[ra] = rb
+
+    for subject, _, obj in triples:
+        union(subject, obj)
+
+    components: dict[str, list[tuple[str, str, str]]] = {}
+    for triple in triples:
+        components.setdefault(find(triple[0]), []).append(triple)
+
+    selected: list[tuple[str, str, str]] = []
+    skipped_too_large = 0
+    for edges in sorted(components.values(), key=len, reverse=True):
+        if len(selected) + len(edges) > budget:
+            skipped_too_large += 1
+            continue
+        selected.extend(edges)
+        if len(selected) >= budget:
+            break
+
+    return selected, len(components), skipped_too_large
+
+
 def body_reader(path: Path):
     """Yield TSV rows, skipping the commented YAML header."""
     with path.open(encoding="utf-8", newline="") as handle:
@@ -101,64 +150,84 @@ def main() -> int:
         "--limit",
         type=int,
         default=0,
-        help="keep only the first N mappings (0 = all). Use this to build the "
-        "smaller scales; transitive closure over a full mapping set can be "
-        "very large.",
+        help="approximate edge budget for a smaller scale (0 = keep everything). "
+        "Whole connected components are taken, largest first, until the budget "
+        "is reached -- never a prefix of the file. See scale_by_components().",
     )
     args = parser.parse_args()
 
     prefixes = read_curie_map(args.input)
     required = {"subject_id", "predicate_id", "object_id"}
 
-    written = 0
     dropped = 0
     guessed_prefixes: set[str] = set()
     known = set(prefixes) | set(FALLBACK_PREFIXES)
 
-    with args.output.open("w", encoding="utf-8") as out:
-        rows = body_reader(args.input)
-        first = next(rows, None)
-        if first is None:
-            print(f"error: {args.input} has no data rows", file=sys.stderr)
-            return 1
-        missing = required - set(first)
-        if missing:
-            print(
-                f"error: {args.input} is missing SSSOM columns: {sorted(missing)}",
-                file=sys.stderr,
-            )
-            return 1
+    rows = body_reader(args.input)
+    first = next(rows, None)
+    if first is None:
+        print(f"error: {args.input} has no data rows", file=sys.stderr)
+        return 1
+    missing = required - set(first)
+    if missing:
+        print(
+            f"error: {args.input} is missing SSSOM columns: {sorted(missing)}",
+            file=sys.stderr,
+        )
+        return 1
 
-        for row in [first, *rows]:
-            if args.limit and written >= args.limit:
+    triples: list[tuple[str, str, str]] = []
+    for row in [first, *rows]:
+        triple = []
+        for column in ("subject_id", "predicate_id", "object_id"):
+            raw = (row.get(column) or "").strip()
+            prefix = raw.partition(":")[0]
+            if prefix and prefix not in known and not raw.startswith("http"):
+                guessed_prefixes.add(prefix)
+            iri = expand(raw, prefixes)
+            if iri is None:
+                triple = []
                 break
-            triple = []
-            for column in ("subject_id", "predicate_id", "object_id"):
-                raw = (row.get(column) or "").strip()
-                prefix = raw.partition(":")[0]
-                if prefix and prefix not in known and not raw.startswith("http"):
-                    guessed_prefixes.add(prefix)
-                iri = expand(raw, prefixes)
-                if iri is None:
-                    triple = []
-                    break
-                triple.append(iri)
-            if len(triple) != 3:
-                dropped += 1
-                continue
-            out.write(f"<{triple[0]}> <{triple[1]}> <{triple[2]}> .\n")
-            written += 1
+            triple.append(iri)
+        if len(triple) != 3:
+            dropped += 1
+            continue
+        triples.append((triple[0], triple[1], triple[2]))
 
-    print(f"wrote   {written} triples -> {args.output}")
+    total_components = None
+    skipped_too_large = 0
+    if args.limit and len(triples) > args.limit:
+        triples, total_components, skipped_too_large = scale_by_components(
+            triples, args.limit
+        )
+
+    with args.output.open("w", encoding="utf-8") as out:
+        for subject, predicate, obj in triples:
+            out.write(f"<{subject}> <{predicate}> <{obj}> .\n")
+
+    # A node appearing as both subject and object is what every chaining rule
+    # needs. Report it, because zero pivots means the corpus is useless for this
+    # experiment however many triples it has.
+    subjects = {t[0] for t in triples}
+    objects = {t[2] for t in triples}
+    pivots = len(subjects & objects)
+
+    print(f"wrote   {len(triples)} triples -> {args.output}")
     print(f"dropped {dropped} rows (unresolvable subject, predicate, or object)")
     print(f"prefixes from curie_map: {len(prefixes)}")
-    if guessed_prefixes:
-        preview = ", ".join(sorted(guessed_prefixes)[:12])
+    if total_components is not None:
         print(
-            f"note: {len(guessed_prefixes)} prefix(es) not in curie_map were "
-            f"expanded as OBO: {preview}"
+            f"scaled by whole components: {total_components} components in the "
+            f"source, {skipped_too_large} skipped as too large for the budget"
         )
-    return 0 if written else 1
+    print(f"pivot nodes (both subject and object): {pivots}")
+    if not pivots:
+        print(
+            "warning: no pivot nodes, so no transitivity or role-chain rule can "
+            "fire. This corpus will derive nothing and measure nothing.",
+            file=sys.stderr,
+        )
+    return 0 if triples else 1
 
 
 if __name__ == "__main__":

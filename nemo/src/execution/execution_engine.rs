@@ -13,6 +13,7 @@ use nemo_physical::{
         execution_plan::ColumnOrder,
     },
     meta::timing::TimedCode,
+    resource::Resource,
 };
 
 use crate::{
@@ -173,12 +174,14 @@ impl<Strategy: RuleSelectionStrategy> ExecutionEngine<Strategy> {
     ///
     /// - **Imports are skipped**, which is the whole point: the tables already
     ///   exist and re-reading the sources would be the cost this avoids.
-    /// - **Constants are added after the dictionary is replayed, not before.**
-    ///   Dictionary ids depend on insertion order, and the stored tries hold ids
-    ///   from the original run. Inserting the program's constants first would
-    ///   shift every id and reinterpret the tables against a different mapping.
-    ///   Replaying first and adding constants afterwards is safe, because adding a
-    ///   value already present returns its existing id.
+    /// - **Constants are added before the dictionary is replayed**, matching the
+    ///   order [Self::initialize] uses. Dictionary block numbers are assigned as
+    ///   sub-dictionaries are first used, and a constant can decide that order
+    ///   without ever reaching a table -- an import resource string, for instance.
+    ///   Replaying a snapshot into an empty dictionary therefore shifts every
+    ///   block, and the stored tries end up reinterpreted against a different
+    ///   mapping. Reproducing the original order and verifying every id is what
+    ///   makes this safe.
     ///
     /// The store's cache key is not checked here. Whether a store *applies* is the
     /// caller's question — see [crate::model_store::ModelStore::is_applicable] —
@@ -194,13 +197,18 @@ impl<Strategy: RuleSelectionStrategy> ExecutionEngine<Strategy> {
         let mut table_manager = TableManager::new();
         Self::register_all_predicates(&mut table_manager, &normalized_program);
 
-        // Before anything else touches the dictionary.
+        // Constants first, then the replay -- the same order the original run
+        // used. Dictionary block numbers are assigned as sub-dictionaries are
+        // first used, and a constant can decide that order without ever reaching
+        // a table, so replaying a snapshot into an empty dictionary shifts every
+        // block. Values the snapshot repeats are simply re-added, which returns
+        // the id they already have.
+        Self::add_all_constants(&mut table_manager, &normalized_program);
+
         store
             .dictionary()?
             .restore_into(&mut *table_manager.dictionary_mut())
             .map_err(crate::model_store::ModelStoreError::DictionaryRestore)?;
-
-        Self::add_all_constants(&mut table_manager, &normalized_program);
 
         for entry in &store.manifest().predicates {
             let predicate = Tag::new(entry.predicate.clone());
@@ -432,6 +440,35 @@ impl<Strategy: RuleSelectionStrategy> ExecutionEngine<Strategy> {
         Ok(())
     }
 
+    /// The cache key for this engine's program, or `None` if it cannot be keyed
+    /// reliably.
+    ///
+    /// `None` for a program importing anything other than a local file. An HTTP
+    /// resource has no cheap fingerprint, and recording it as "unknown" would be
+    /// worse than not caching: two runs would both record the same unknown, they
+    /// would compare equal, and a resource that changed between them would be
+    /// served from a stale store. Declining to cache is the conservative answer.
+    /// Piped input is likewise never the same twice.
+    pub fn cache_key(&self, parameters: BTreeMap<String, String>) -> Option<CacheKey> {
+        let mut imports = Vec::new();
+
+        for import in self.program.imports() {
+            match import.handler().resource() {
+                Resource::Path(path) => imports.push(ImportFingerprint::of_file(
+                    path.to_string_lossy().into_owned(),
+                    path,
+                )),
+                Resource::Http { .. } | Resource::Pipe => return None,
+            }
+        }
+
+        Some(CacheKey::new(
+            self.program.derivation_fingerprint(),
+            parameters,
+            imports,
+        ))
+    }
+
     /// Write the materialized model to a store at `path`.
     ///
     /// Captures what explaining a fact needs, which is more than the final
@@ -452,6 +489,20 @@ impl<Strategy: RuleSelectionStrategy> ExecutionEngine<Strategy> {
         parameters: BTreeMap<String, String>,
         imports: Vec<ImportFingerprint>,
     ) -> Result<PathBuf, Error> {
+        let key = CacheKey::new(self.program.derivation_fingerprint(), parameters, imports);
+        self.write_model_store_with_key(path, key).await
+    }
+
+    /// Write the materialized model using a key that has already been built.
+    ///
+    /// Used when the key was needed earlier in the run -- to decide whether a
+    /// stored model applied -- so that the same key is recorded rather than
+    /// recomputed and possibly differing.
+    pub async fn write_model_store_with_key(
+        &mut self,
+        path: impl AsRef<Path>,
+        key: CacheKey,
+    ) -> Result<PathBuf, Error> {
         let mut writer = ModelStoreWriter::create(path)?;
 
         match self.capture_into(&mut writer).await {
@@ -462,7 +513,6 @@ impl<Strategy: RuleSelectionStrategy> ExecutionEngine<Strategy> {
                 );
                 writer.write_dictionary(&snapshot)?;
 
-                let key = CacheKey::new(self.program.to_string(), parameters, imports);
                 Ok(writer.finish(key, self.rule_history.clone())?)
             }
             Err(error) => {

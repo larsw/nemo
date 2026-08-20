@@ -220,6 +220,10 @@ pub struct CliApp {
     /// Overwrite global parameters in the rule file
     #[arg(long = "param", value_parser = parse_key_val, action = ArgAction::Append)]
     pub(crate) parameters: Vec<ParamKeyValue>,
+    /// Reuse a previously computed model from this directory, and store one there
+    /// after computing. Skips inference entirely on a hit.
+    #[arg(long = "cache-dir", value_parser)]
+    pub(crate) cache_dir: Option<PathBuf>,
     /// Disable warnings when validating rule files
     #[arg(long = "no-warnings")]
     pub(crate) disable_warnings: bool,

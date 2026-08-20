@@ -49,6 +49,16 @@
 //! nulls with `fresh_null_id` and adds everything else, verifying every id as it
 //! goes rather than trusting the argument above.
 //!
+//! Replaying alone is *not* sufficient, and this was caught by that verification
+//! rather than by reasoning. Block numbers are assigned in the order
+//! sub-dictionaries are first used, and a value can influence that order without
+//! ever appearing in a table — a program constant, for instance, which is added
+//! before any import is read. Replaying a snapshot that omits it into an empty
+//! dictionary shifts every block. So a caller must first reproduce whatever the
+//! original run put in before the snapshot's values, in the same order, and then
+//! replay. The id checks are what make that requirement enforceable instead of
+//! merely documented.
+//!
 //! # Encoding
 //!
 //! A sorted `(id, offset)` index followed by a blob of encoded values. Lookup is
@@ -298,11 +308,6 @@ impl DictionarySnapshot {
 /// A snapshot could not be replayed into a dictionary.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DictionaryRestoreError {
-    /// The target dictionary already held values, so ids would not line up.
-    NotEmpty {
-        /// How many values it already held.
-        existing: usize,
-    },
     /// A replayed value was given an id other than the one it had.
     ///
     /// Means the tries referring to these ids can no longer be interpreted, so it
@@ -320,10 +325,6 @@ pub enum DictionaryRestoreError {
 impl Display for DictionaryRestoreError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::NotEmpty { existing } => write!(
-                f,
-                "cannot replay a snapshot into a dictionary that already holds {existing} value(s)"
-            ),
             Self::IdMismatch {
                 expected,
                 actual,
@@ -339,25 +340,22 @@ impl Display for DictionaryRestoreError {
 impl std::error::Error for DictionaryRestoreError {}
 
 impl DictionarySnapshot {
-    /// Replay this snapshot into an empty dictionary, reproducing its ids.
+    /// Replay this snapshot into a dictionary, reproducing its ids.
     ///
-    /// The dictionary must be empty: ids depend on insertion order, so anything
-    /// already present shifts what follows.
+    /// The caller is responsible for having put in whatever the original run
+    /// added *before* these values, in the same order — program constants, most
+    /// notably. Ids depend on insertion order, and a value can affect which block
+    /// a sub-dictionary gets without appearing in any table, so a snapshot is not
+    /// self-sufficient. Values already present are re-added, which returns their
+    /// existing id and therefore verifies rather than duplicates.
     ///
-    /// Verifies each assigned id rather than assuming the ordering argument holds.
-    /// A mismatch means every trie referring to these ids has become
-    /// uninterpretable, which is worth failing over rather than discovering later
-    /// as wrong answers.
+    /// Every assigned id is checked rather than assumed. A mismatch means the
+    /// tries referring to these ids have become uninterpretable, which is worth
+    /// failing over instead of discovering later as wrong answers.
     pub fn restore_into<Dict>(&self, dictionary: &mut Dict) -> Result<(), DictionaryRestoreError>
     where
         Dict: DvDict + ?Sized,
     {
-        if !dictionary.is_empty() {
-            return Err(DictionaryRestoreError::NotEmpty {
-                existing: dictionary.len(),
-            });
-        }
-
         for (expected, value) in &self.entries {
             // Nulls can only be minted, not added: adding an existing null is
             // rejected. They come from their own block and are numbered
@@ -589,6 +587,23 @@ fn decode_value(reader: &mut Cursor<'_>) -> Result<AnyDataValue, DictionaryStora
 
 #[cfg(test)]
 mod test {
+    /// Convenience for the tests: replay a snapshot into `self`.
+    trait PipeRestore {
+        fn pipe_restore(
+            &mut self,
+            snapshot: &super::DictionarySnapshot,
+        ) -> Result<(), super::DictionaryRestoreError>;
+    }
+
+    impl<Dict: super::DvDict> PipeRestore for Dict {
+        fn pipe_restore(
+            &mut self,
+            snapshot: &super::DictionarySnapshot,
+        ) -> Result<(), super::DictionaryRestoreError> {
+            snapshot.restore_into(self)
+        }
+    }
+
     use crate::{
         datavalues::AnyDataValue,
         dictionary::{
@@ -810,22 +825,40 @@ mod test {
     }
 
     #[test]
-    fn replaying_into_a_used_dictionary_is_refused() {
+    fn a_snapshot_alone_cannot_reproduce_block_numbers() {
+        // The failure mode found by running the CLI. A value can decide which
+        // block a sub-dictionary gets without ever appearing in a table: here a
+        // plain string is added first, so strings take block 0 and IRIs block 1.
+        // Only the IRI reaches a table, so replaying the snapshot alone puts IRIs
+        // in block 0 and every id shifts.
         let mut original = MetaDvDictionary::new();
-        let id = original
+        original.add_datavalue(AnyDataValue::new_plain_string("a constant".to_string()));
+        let iri = original
             .add_datavalue(AnyDataValue::new_iri("http://example.org/a".to_string()))
             .value();
-        let snapshot = DictionarySnapshot::capture(&original, [id]);
 
-        // Anything already present shifts the ids that follow, so this cannot be
-        // allowed to proceed and silently renumber.
-        let mut occupied = MetaDvDictionary::new();
-        occupied.add_datavalue(AnyDataValue::new_iri("http://example.org/z".to_string()));
+        let snapshot = DictionarySnapshot::capture(&original, [iri]);
 
-        assert!(matches!(
-            snapshot.restore_into(&mut occupied),
-            Err(DictionaryRestoreError::NotEmpty { existing: 1 })
-        ));
+        let mut naive = MetaDvDictionary::new();
+        assert!(
+            matches!(
+                snapshot.restore_into(&mut naive),
+                Err(DictionaryRestoreError::IdMismatch { .. })
+            ),
+            "replaying without the earlier constant must be detected, not tolerated"
+        );
+
+        // Reproducing what came first makes the replay line up.
+        let mut faithful = MetaDvDictionary::new();
+        faithful.add_datavalue(AnyDataValue::new_plain_string("a constant".to_string()));
+        faithful
+            .pipe_restore(&snapshot)
+            .expect("replay should succeed once the prefix is reproduced");
+
+        assert_eq!(
+            faithful.id_to_datavalue(iri),
+            Some(AnyDataValue::new_iri("http://example.org/a".to_string()))
+        );
     }
 
     #[test]

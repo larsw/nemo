@@ -16,10 +16,14 @@ use std::{
 
 use assert_fs::TempDir;
 use nemo::{
-    api::{load, load_program_handle, reason},
-    execution::ExecutionEngine,
+    api::{load, load_program_handle, load_string, reason},
+    execution::{
+        ExecutionEngine,
+        execution_parameters::{ExecutionParameters, ExportParameters},
+    },
     io::{ImportManager, resource_providers::ResourceProviders},
-    model_store::{CacheKey, ImportFingerprint, ModelStore},
+    model_store::{CacheKey, ImportFingerprint, ModelCache, ModelStore},
+    rule_file::RuleFile,
 };
 
 /// Transitive closure with a derived predicate, so the store has to hold several
@@ -331,4 +335,116 @@ async fn a_restored_engine_can_explain_what_it_holds() {
         tree.node_count() > 1,
         "a derived fact should have a non-trivial derivation tree"
     );
+}
+
+/// Build an engine for `PROGRAM` under a given export setting.
+async fn engine_with_exports(exports: ExportParameters) -> nemo::api::Engine {
+    let mut parameters = ExecutionParameters::default();
+    parameters.set_export_parameters(exports);
+
+    let file = RuleFile::new(PROGRAM.to_string(), String::default());
+    ExecutionEngine::from_file(file, parameters)
+        .await
+        .expect("program should load")
+        .into_object()
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn the_key_ignores_the_export_setting() {
+    // Regression, found by running the CLI rather than by reasoning. Export
+    // directives appear in the normalized program's Display form, so keying on
+    // that made `--export none` and the default setting want separate copies of
+    // an identical model -- and a run that only wanted to *explain* something
+    // re-inferred everything first, which is exactly the cost the store removes.
+    //
+    // Note the narrowness of the claim. Adding an `@export` for a predicate does
+    // change what is derived, because normalization prunes rules that no output
+    // needs. What must not matter is the export *setting* applied to one program.
+    let _guard = engine_lock();
+
+    let keep = engine_with_exports(ExportParameters::Keep)
+        .await
+        .cache_key(BTreeMap::new())
+        .expect("a program with no imports is keyable");
+    let none = engine_with_exports(ExportParameters::None)
+        .await
+        .cache_key(BTreeMap::new())
+        .expect("a program with no imports is keyable");
+
+    assert_eq!(
+        keep, none,
+        "the export setting decides what is written out, not what is inferred"
+    );
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn the_key_still_notices_a_changed_rule() {
+    let _guard = engine_lock();
+
+    let original = load_string(PROGRAM.to_string())
+        .await
+        .expect("program should load")
+        .cache_key(BTreeMap::new())
+        .expect("keyable");
+
+    let altered = load_string(PROGRAM.replace(
+        "path(?x, ?y) :- edge(?x, ?y) .",
+        "path(?y, ?x) :- edge(?x, ?y) .",
+    ))
+    .await
+    .expect("program should load")
+    .cache_key(BTreeMap::new())
+    .expect("keyable");
+
+    assert_ne!(
+        original, altered,
+        "a changed rule must invalidate the store"
+    );
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn a_cache_hit_reproduces_the_model() {
+    let _guard = engine_lock();
+    let temp = TempDir::new().expect("temp dir");
+    let cache = ModelCache::open(temp.path().join("cache")).expect("open cache");
+
+    let mut computed = load_string(PROGRAM.to_string())
+        .await
+        .expect("program should load");
+    reason(&mut computed)
+        .await
+        .expect("reasoning should succeed");
+
+    let key = computed.cache_key(BTreeMap::new()).expect("keyable");
+    assert!(cache.lookup(&key).is_none(), "nothing stored yet");
+
+    computed
+        .write_model_store_with_key(cache.reserve(), key.clone())
+        .await
+        .expect("store should be written");
+
+    let store = cache
+        .lookup(&key)
+        .expect("the stored model should be found");
+    let mut restored = restored_engine(&store).await;
+
+    let tag = nemo::rule_model::components::tag::Tag::new("path".to_string());
+    let mut expected: Vec<String> = computed
+        .predicate_rows(&tag)
+        .await
+        .expect("rows")
+        .expect("path exists")
+        .map(|row| format!("{row:?}"))
+        .collect();
+    let mut actual: Vec<String> = restored
+        .predicate_rows(&tag)
+        .await
+        .expect("rows")
+        .expect("path exists")
+        .map(|row| format!("{row:?}"))
+        .collect();
+    expected.sort();
+    actual.sort();
+
+    assert_eq!(actual, expected);
 }

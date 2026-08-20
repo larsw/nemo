@@ -28,6 +28,8 @@ use colored::Colorize;
 use cli::{CliApp, FactPrinting, Reporting};
 
 use error::CliError;
+use std::{collections::BTreeMap, path::PathBuf};
+
 use nemo::{
     datavalues::AnyDataValue,
     error::Error,
@@ -37,6 +39,7 @@ use nemo::{
     },
     io::{ImportManager, resource_providers::ResourceProviders},
     meta::timing::{TimedCode, TimedDisplay},
+    model_store::{CacheKey, ModelCache, ModelStore},
     rule_file::RuleFile,
     rule_model::components::{fact::Fact, tag::Tag, term::Term},
 };
@@ -171,6 +174,60 @@ fn print_memory_details(engine: &DefaultExecutionEngine) {
     println!("\nMemory report:\n\n{}", engine.memory_usage());
 }
 
+/// What to do about the model cache for this run.
+enum CachePlan {
+    /// A stored model applies; restore it instead of reasoning.
+    Hit {
+        /// The matching store.
+        store: ModelStore,
+    },
+    /// Nothing applies; reason, then store the result at `target`.
+    Miss {
+        /// Free path to write the new store to.
+        target: PathBuf,
+        /// Key to record with it.
+        key: CacheKey,
+    },
+}
+
+/// Decide what the cache can do for this run.
+///
+/// `Ok(None)` means the cache is not in play: either no directory was given, or
+/// the program cannot be keyed reliably. `ExecutionEngine::cache_key` declines to
+/// key a program importing anything other than a local file, since an HTTP
+/// resource has no cheap fingerprint and treating it as unchanged would serve a
+/// stale model.
+fn resolve_cache<Strategy: nemo::execution::selection_strategy::strategy::RuleSelectionStrategy>(
+    cli: &CliApp,
+    engine: &ExecutionEngine<Strategy>,
+    parameters: BTreeMap<String, String>,
+) -> Result<Option<CachePlan>, CliError> {
+    let Some(directory) = &cli.cache_dir else {
+        return Ok(None);
+    };
+
+    let Some(key) = engine.cache_key(parameters) else {
+        eprintln!(
+            "note: not using the model cache -- this program imports a resource that cannot be \
+             fingerprinted, so a stored model could not be shown to still apply"
+        );
+        return Ok(None);
+    };
+
+    let cache = ModelCache::open(directory).map_err(Error::from)?;
+
+    match cache.lookup(&key) {
+        Some(store) => {
+            eprintln!("note: reusing the cached model, skipping inference");
+            Ok(Some(CachePlan::Hit { store }))
+        }
+        None => Ok(Some(CachePlan::Miss {
+            target: cache.reserve(),
+            key,
+        })),
+    }
+}
+
 async fn run(mut cli: CliApp) -> Result<(), CliError> {
     TimedCode::instance().start();
     TimedCode::instance().sub("Reading & Preprocessing").start();
@@ -193,6 +250,15 @@ async fn run(mut cli: CliApp) -> Result<(), CliError> {
     execution_parameters.set_export_parameters(cli.output.export_setting.into());
     execution_parameters.set_import_manager(import_manager);
 
+    // Kept before draining, because the cache key has to record which bindings
+    // the program was run with: identical program text under a different
+    // $importfile reads different data.
+    let parameter_bindings: BTreeMap<String, String> = cli
+        .parameters
+        .iter()
+        .map(|parameter| (parameter.key.clone(), parameter.value.clone()))
+        .collect();
+
     if let Err(parameter) = execution_parameters.set_global(
         cli.parameters
             .drain(..)
@@ -208,17 +274,58 @@ async fn run(mut cli: CliApp) -> Result<(), CliError> {
 
     log::info!("Rules parsed");
 
+    // Resolved before reasoning but after parsing: the key needs the normalized
+    // program, and building the engine does not read any imported data -- sources
+    // stay lazy until a table is first touched -- so a hit still skips the cost.
+    let cache_plan = resolve_cache(&cli, &engine, parameter_bindings)?;
+
     for (predicate, handler) in engine.exports() {
         export_manager.validate(&predicate, &handler)?;
     }
 
     TimedCode::instance().sub("Reading & Preprocessing").stop();
 
-    TimedCode::instance().sub("Reasoning").start();
-    log::info!("Reasoning ... ");
-    engine.execute().await?;
-    log::info!("Reasoning done");
-    TimedCode::instance().sub("Reasoning").stop();
+    let mut cache_target = None;
+
+    match cache_plan {
+        Some(CachePlan::Hit { store }) => {
+            TimedCode::instance().sub("Reasoning").start();
+            log::info!("Restoring model from cache ...");
+            let import_manager = ImportManager::new(ResourceProviders::with_base_path(
+                cli.import_directory.clone(),
+            ));
+            engine = ExecutionEngine::from_model_store(
+                engine.current_program_handle(),
+                import_manager,
+                &store,
+            )
+            .await?;
+            log::info!("Model restored");
+            TimedCode::instance().sub("Reasoning").stop();
+        }
+        plan => {
+            if let Some(CachePlan::Miss { target, key }) = plan {
+                cache_target = Some((target, key));
+            }
+
+            TimedCode::instance().sub("Reasoning").start();
+            log::info!("Reasoning ... ");
+            engine.execute().await?;
+            log::info!("Reasoning done");
+            TimedCode::instance().sub("Reasoning").stop();
+        }
+    }
+
+    if let Some((target, key)) = cache_target {
+        // After reasoning and before export, so an export failure does not
+        // discard a model that was expensive to compute. A failure to store is
+        // reported but not fatal: the results are already correct.
+        log::info!("Storing model in cache ...");
+        match engine.write_model_store_with_key(&target, key).await {
+            Ok(path) => log::info!("Model stored at {}", path.display()),
+            Err(error) => eprintln!("warning: could not store the model: {error}"),
+        }
+    }
 
     let mut stdout_used = false;
 

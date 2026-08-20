@@ -173,11 +173,16 @@ pub struct CacheKey {
     pub trie_format_version: u32,
     /// Layout version of the dictionary encoding.
     pub dictionary_format_version: u32,
-    /// Canonical text of the normalized program, stored verbatim.
+    /// Canonical text of everything that determines what the program derives,
+    /// stored verbatim.
     ///
     /// The normalized program rather than the source file: two files differing
     /// only in whitespace or comments normalize identically and should share a
     /// store, and a transformation that changes the program must not.
+    ///
+    /// Exports and output predicates are excluded, since they decide what is
+    /// written out rather than what is inferred. See
+    /// `NormalizedProgram::derivation_fingerprint`.
     pub program: String,
     /// Global parameter bindings.
     ///
@@ -541,6 +546,71 @@ fn write_file(path: &Path, bytes: &[u8]) -> Result<(), ModelStoreError> {
     })
 }
 
+/// A directory holding several model stores.
+///
+/// Stores are looked up by reading each manifest and comparing cache keys, not by
+/// hashing a key into a path. That follows from the decision not to hash: with no
+/// suitable hash available, there is no name to compute. Reading a handful of
+/// small manifests is cheap, and it keeps a mismatch diagnosable — you can look
+/// at the manifests and see *why* nothing matched.
+///
+/// Entries are numbered directories, so nothing derived from user input reaches
+/// the filesystem.
+#[derive(Debug)]
+pub struct ModelCache {
+    /// Directory holding the entries.
+    root: PathBuf,
+}
+
+impl ModelCache {
+    /// Use `root` as a cache directory, creating it if needed.
+    pub fn open(root: impl AsRef<Path>) -> Result<Self, ModelStoreError> {
+        let root = root.as_ref().to_path_buf();
+        create_dir_all(&root)?;
+
+        Ok(Self { root })
+    }
+
+    /// The store matching `key`, if one is present.
+    ///
+    /// Entries that cannot be opened are skipped rather than reported: a cache
+    /// containing something unreadable — a half-removed entry, a store from a
+    /// future layout version — should behave as a miss, not as a failure.
+    pub fn lookup(&self, key: &CacheKey) -> Option<ModelStore> {
+        self.entries()
+            .into_iter()
+            .filter_map(|path| ModelStore::open(path).ok())
+            .find(|store| store.is_applicable(key))
+    }
+
+    /// A free path for a new entry.
+    ///
+    /// The caller writes it with [ModelStoreWriter]; nothing is created here, so
+    /// an abandoned write leaves the number free for next time.
+    pub fn reserve(&self) -> PathBuf {
+        (0u64..)
+            .map(|index| self.root.join(format!("{index:08}")))
+            .find(|path| !path.exists())
+            .expect("the search is unbounded, so some index is free")
+    }
+
+    /// Paths of the entries currently present, ascending.
+    pub fn entries(&self) -> Vec<PathBuf> {
+        let Ok(directory) = fs::read_dir(&self.root) else {
+            return Vec::new();
+        };
+
+        let mut paths: Vec<PathBuf> = directory
+            .filter_map(Result::ok)
+            .map(|entry| entry.path())
+            .filter(|path| path.join(MANIFEST_FILE).exists())
+            .collect();
+
+        paths.sort();
+        paths
+    }
+}
+
 #[cfg(test)]
 mod test {
     use std::collections::BTreeMap;
@@ -552,7 +622,7 @@ mod test {
     };
 
     use super::{
-        CacheKey, ImportFingerprint, ModelStore, ModelStoreError, ModelStoreWriter,
+        CacheKey, ImportFingerprint, ModelCache, ModelStore, ModelStoreError, ModelStoreWriter,
         STORE_LAYOUT_VERSION,
     };
 
@@ -824,6 +894,91 @@ mod test {
             store.load_table_bytes(awkward, 3).expect("load"),
             Some(b"payload".to_vec())
         );
+    }
+
+    #[test]
+    fn a_cache_finds_only_the_matching_entry() {
+        let temp = TempDir::new().expect("temp dir");
+        let cache = ModelCache::open(temp.path().join("cache")).expect("open cache");
+
+        assert!(cache.entries().is_empty());
+        assert!(cache.lookup(&key("p")).is_none(), "an empty cache misses");
+
+        for program in ["p(?a) :- q(?a) .", "r(?a) :- s(?a) ."] {
+            let path = cache.reserve();
+            let mut writer = ModelStoreWriter::create(&path).expect("create");
+            writer
+                .write_table_bytes("p", 1, 1, program.as_bytes())
+                .expect("write");
+            writer.finish(key(program), Vec::new()).expect("finish");
+        }
+
+        assert_eq!(cache.entries().len(), 2);
+
+        let found = cache
+            .lookup(&key("r(?a) :- s(?a) ."))
+            .expect("the second entry should match");
+        assert_eq!(
+            found.load_table_bytes("p", 1).expect("load"),
+            Some(b"r(?a) :- s(?a) .".to_vec()),
+            "lookup should return the entry whose key matched, not merely any entry"
+        );
+
+        assert!(
+            cache.lookup(&key("t(?a) :- u(?a) .")).is_none(),
+            "an unrelated program should miss"
+        );
+    }
+
+    #[test]
+    fn reserve_does_not_reuse_a_taken_path() {
+        let temp = TempDir::new().expect("temp dir");
+        let cache = ModelCache::open(temp.path().join("cache")).expect("open cache");
+
+        let first = cache.reserve();
+        ModelStoreWriter::create(&first)
+            .expect("create")
+            .finish(key("p"), Vec::new())
+            .expect("finish");
+
+        assert_ne!(cache.reserve(), first);
+    }
+
+    #[test]
+    fn an_unreadable_entry_is_a_miss_not_a_failure() {
+        let temp = TempDir::new().expect("temp dir");
+        let cache = ModelCache::open(temp.path().join("cache")).expect("open cache");
+
+        let path = cache.reserve();
+        ModelStoreWriter::create(&path)
+            .expect("create")
+            .finish(key("p"), Vec::new())
+            .expect("finish");
+        std::fs::write(path.join("manifest.json"), b"{ truncated").expect("clobber");
+
+        // A cache holding something unreadable -- a half-removed entry, a store
+        // from a newer layout -- must behave as a miss. Failing the run because a
+        // *cache* is damaged would be worse than recomputing.
+        assert!(cache.lookup(&key("p")).is_none());
+        assert!(!cache.entries().is_empty(), "the entry is still on disk");
+    }
+
+    #[test]
+    fn staging_directories_are_not_mistaken_for_entries() {
+        let temp = TempDir::new().expect("temp dir");
+        let cache = ModelCache::open(temp.path().join("cache")).expect("open cache");
+
+        let path = cache.reserve();
+        let mut writer = ModelStoreWriter::create(&path).expect("create");
+        writer.write_table_bytes("p", 1, 1, b"x").expect("write");
+
+        // Mid-write: the staging directory exists but has no manifest, so it must
+        // not be offered as an entry.
+        assert!(cache.entries().is_empty());
+        assert!(cache.lookup(&key("p")).is_none());
+
+        writer.finish(key("p"), Vec::new()).expect("finish");
+        assert_eq!(cache.entries().len(), 1);
     }
 
     #[test]

@@ -77,6 +77,29 @@ impl Display for NormalizedProgram {
 }
 
 impl NormalizedProgram {
+    /// A canonical text of everything that determines what this program derives.
+    ///
+    /// Imports, facts and rules — but deliberately *not* exports or output
+    /// predicates. Those decide what is written out, not what is inferred, so a
+    /// model computed under one export setting is equally valid under another. The
+    /// full [Display] form includes them, which makes it unsuitable as a cache
+    /// key: `--export none` and `--export idb` would each need their own copy of
+    /// an identical model.
+    ///
+    /// Rendered rather than hashed so that a mismatch can be diffed. Programs are
+    /// kilobytes.
+    pub fn derivation_fingerprint(&self) -> String {
+        let imports = self.imports.iter().map(ToString::to_string);
+        let facts = self.facts.iter().map(ToString::to_string);
+        let rules = self.rules.iter().map(ToString::to_string);
+
+        imports
+            .chain(facts)
+            .chain(rules)
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
     /// Return a list of rules contained in this program.
     pub fn rules(&self) -> &Vec<NormalizedRule> {
         &self.rules

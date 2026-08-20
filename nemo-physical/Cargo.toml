@@ -51,7 +51,11 @@ test-log = { workspace = true }
 quickcheck = "1"
 quickcheck_macros = "1"
 flate2 = { workspace = true }
-tokio = { workspace = true }
+# "macros" and "rt" are required by the #[tokio::test] attributes in this crate.
+# Without them `cargo test -p nemo-physical` fails to compile, and the crate's
+# tests only build when another workspace member happens to enable the features
+# and Cargo unifies them.
+tokio = { workspace = true, features = ["macros", "rt"] }
 
 [target.'cfg(target_family = "wasm")'.dependencies]
 wasmtimer = "0.4.1"

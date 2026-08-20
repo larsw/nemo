@@ -374,6 +374,25 @@ impl TableManager {
         &mut self.database
     }
 
+    /// Register a subtable decoded from a persisted model.
+    ///
+    /// The step is recorded rather than assigned, because provenance is recovered
+    /// from it: `find_table_row` returns the step a fact's subtable belongs to and
+    /// `rule_history[step]` then names the rule. A restored model that renumbered
+    /// its steps would reproduce the same facts but explain them wrongly.
+    ///
+    /// Call in ascending step order per predicate, as `add_single_table` asserts.
+    pub(crate) fn add_restored_subtable(&mut self, predicate: Tag, step: usize, trie: Trie) {
+        let order = ColumnOrder::default();
+        let name = self.generate_table_name(&predicate, &order, step);
+        let id = self.database.register_add_trie(&name, order, trie);
+
+        self.predicate_subtables
+            .entry(predicate)
+            .or_default()
+            .add_single_table(step, id);
+    }
+
     /// Every predicate's per-step subtables, ordered by predicate name.
     ///
     /// What a persisted model records: provenance is recovered from which step a

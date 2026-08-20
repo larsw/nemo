@@ -45,7 +45,8 @@ use std::{
 
 use nemo_physical::{
     dictionary::storage::{
-        DictionarySnapshot, DictionaryStorageError, FORMAT_VERSION as DICTIONARY_FORMAT_VERSION,
+        DictionaryRestoreError, DictionarySnapshot, DictionaryStorageError,
+        FORMAT_VERSION as DICTIONARY_FORMAT_VERSION,
     },
     tabular::trie::{
         Trie,
@@ -103,6 +104,12 @@ pub enum ModelStoreError {
     /// The dictionary snapshot could not be decoded.
     #[error("dictionary snapshot could not be decoded: {0}")]
     MalformedDictionary(DictionaryStorageError),
+    /// The dictionary snapshot could not be replayed into a dictionary.
+    ///
+    /// Means the stored tables can no longer be interpreted, since their storage
+    /// ids would refer to a different mapping.
+    #[error("dictionary snapshot could not be replayed: {0}")]
+    DictionaryRestore(DictionaryRestoreError),
     /// The target directory already exists.
     #[error("cannot create a model store at {path}: it already exists")]
     AlreadyExists {

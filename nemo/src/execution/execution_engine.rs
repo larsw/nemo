@@ -21,7 +21,7 @@ use crate::{
         normalization::program::NormalizedProgram, strategy::forward::StrategyForward,
     },
     io::{formats::Export, import_manager::ImportManager},
-    model_store::{CacheKey, ImportFingerprint, ModelStoreWriter},
+    model_store::{CacheKey, ImportFingerprint, ModelStore, ModelStoreWriter},
     rule_file::RuleFile,
     rule_model::{
         components::tag::Tag, pipeline::transformations::default::TransformationDefault,
@@ -163,6 +163,87 @@ impl<Strategy: RuleSelectionStrategy> ExecutionEngine<Strategy> {
             rule_history: vec![usize::MAX], // Placeholder, Step counting starts at 1
             step_times_ms: vec![0],         // Placeholder, Step counting starts at 1
             current_step: 1,
+        })
+    }
+
+    /// Build an engine from a persisted model instead of computing one.
+    ///
+    /// Deliberately *not* built on [Self::initialize]. Two of the steps that does
+    /// must not happen here:
+    ///
+    /// - **Imports are skipped**, which is the whole point: the tables already
+    ///   exist and re-reading the sources would be the cost this avoids.
+    /// - **Constants are added after the dictionary is replayed, not before.**
+    ///   Dictionary ids depend on insertion order, and the stored tries hold ids
+    ///   from the original run. Inserting the program's constants first would
+    ///   shift every id and reinterpret the tables against a different mapping.
+    ///   Replaying first and adding constants afterwards is safe, because adding a
+    ///   value already present returns its existing id.
+    ///
+    /// The store's cache key is not checked here. Whether a store *applies* is the
+    /// caller's question — see [crate::model_store::ModelStore::is_applicable] —
+    /// and answering it needs the program the caller already has.
+    pub async fn from_model_store(
+        program_handle: ProgramHandle,
+        import_manager: ImportManager,
+        store: &ModelStore,
+    ) -> Result<Self, Error> {
+        let normalized_program = NormalizedProgram::normalize_program(&program_handle);
+        let rule_translation = RuleIdTranslation::new(&program_handle, &normalized_program);
+
+        let mut table_manager = TableManager::new();
+        Self::register_all_predicates(&mut table_manager, &normalized_program);
+
+        // Before anything else touches the dictionary.
+        store
+            .dictionary()?
+            .restore_into(&mut *table_manager.dictionary_mut())
+            .map_err(crate::model_store::ModelStoreError::DictionaryRestore)?;
+
+        Self::add_all_constants(&mut table_manager, &normalized_program);
+
+        for entry in &store.manifest().predicates {
+            let predicate = Tag::new(entry.predicate.clone());
+
+            for subtable in &entry.subtables {
+                let trie = store
+                    .load_table(&entry.predicate, subtable.step)?
+                    .ok_or_else(|| crate::model_store::ModelStoreError::MissingTableFile {
+                        file: subtable.file.clone(),
+                    })?;
+
+                table_manager.add_restored_subtable(predicate.clone(), subtable.step, trie);
+            }
+        }
+
+        let rule_history = store.manifest().rule_history.clone();
+
+        // Reconstruct when each rule last fired, so that resuming execution does
+        // not treat every restored fact as new. A rule never applied keeps the
+        // default of step 0.
+        let mut rule_infos = vec![RuleInfo::new(); normalized_program.rules().len()];
+        for (step, rule_index) in rule_history.iter().enumerate() {
+            if let Some(info) = rule_infos.get_mut(*rule_index) {
+                info.step_last_applied = step;
+            }
+        }
+
+        let selection_strategy = Strategy::new(normalized_program.rules().iter().collect())?;
+        let current_step = rule_history.len().max(1);
+
+        Ok(Self {
+            program_handle,
+            program: normalized_program,
+            rule_translation,
+            selection_strategy,
+            table_manager,
+            import_manager,
+            predicate_fragmentation: HashMap::new(),
+            predicate_last_union: HashMap::new(),
+            rule_infos,
+            step_times_ms: vec![0; current_step],
+            rule_history,
+            current_step,
         })
     }
 

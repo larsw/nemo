@@ -35,6 +35,20 @@
 //! by [DictionarySnapshot::capture] rather than reported, which makes it safe to
 //! feed it every id found in a table without pre-filtering by storage type.
 //!
+//! # Replaying a snapshot back into a dictionary
+//!
+//! A restored engine has to assign the *same* ids, or the tries it reads are
+//! reinterpreted against a different mapping and silently mean something else.
+//! Replaying in ascending id order reproduces them, because ascending id order is
+//! sub-dictionary creation order — blocks are handed out in the order
+//! sub-dictionaries are first used — and ids run sequentially within a block.
+//!
+//! Nulls are the exception, and were found by measurement rather than reading:
+//! `add_datavalue` on an existing null returns [NONEXISTING_ID_MARK], since a
+//! null can only be minted. [DictionarySnapshot::restore_into] therefore mints
+//! nulls with `fresh_null_id` and adds everything else, verifying every id as it
+//! goes rather than trusting the argument above.
+//!
 //! # Encoding
 //!
 //! A sorted `(id, offset)` index followed by a blob of encoded values. Lookup is
@@ -281,6 +295,92 @@ impl DictionarySnapshot {
     }
 }
 
+/// A snapshot could not be replayed into a dictionary.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DictionaryRestoreError {
+    /// The target dictionary already held values, so ids would not line up.
+    NotEmpty {
+        /// How many values it already held.
+        existing: usize,
+    },
+    /// A replayed value was given an id other than the one it had.
+    ///
+    /// Means the tries referring to these ids can no longer be interpreted, so it
+    /// is reported rather than tolerated.
+    IdMismatch {
+        /// Id the value had in the snapshot.
+        expected: usize,
+        /// Id it was assigned on replay.
+        actual: usize,
+        /// The value, rendered for diagnosis.
+        value: String,
+    },
+}
+
+impl Display for DictionaryRestoreError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::NotEmpty { existing } => write!(
+                f,
+                "cannot replay a snapshot into a dictionary that already holds {existing} value(s)"
+            ),
+            Self::IdMismatch {
+                expected,
+                actual,
+                value,
+            } => write!(
+                f,
+                "replaying {value} produced id {actual}, but it had id {expected}"
+            ),
+        }
+    }
+}
+
+impl std::error::Error for DictionaryRestoreError {}
+
+impl DictionarySnapshot {
+    /// Replay this snapshot into an empty dictionary, reproducing its ids.
+    ///
+    /// The dictionary must be empty: ids depend on insertion order, so anything
+    /// already present shifts what follows.
+    ///
+    /// Verifies each assigned id rather than assuming the ordering argument holds.
+    /// A mismatch means every trie referring to these ids has become
+    /// uninterpretable, which is worth failing over rather than discovering later
+    /// as wrong answers.
+    pub fn restore_into<Dict>(&self, dictionary: &mut Dict) -> Result<(), DictionaryRestoreError>
+    where
+        Dict: DvDict + ?Sized,
+    {
+        if !dictionary.is_empty() {
+            return Err(DictionaryRestoreError::NotEmpty {
+                existing: dictionary.len(),
+            });
+        }
+
+        for (expected, value) in &self.entries {
+            // Nulls can only be minted, not added: adding an existing null is
+            // rejected. They come from their own block and are numbered
+            // sequentially, so minting in ascending order reproduces them.
+            let actual = if value.value_domain() == ValueDomain::Null {
+                dictionary.fresh_null_id()
+            } else {
+                dictionary.add_datavalue(value.clone()).value()
+            };
+
+            if actual != *expected {
+                return Err(DictionaryRestoreError::IdMismatch {
+                    expected: *expected,
+                    actual,
+                    value: value.to_string(),
+                });
+            }
+        }
+
+        Ok(())
+    }
+}
+
 /// Cursor over encoded bytes.
 struct Cursor<'a> {
     bytes: &'a [u8],
@@ -494,7 +594,10 @@ mod test {
         dictionary::{
             DvDict,
             meta_dv_dict::MetaDvDictionary,
-            storage::{DictionarySnapshot, DictionaryStorageError, FORMAT_VERSION, MAGIC},
+            storage::{
+                DictionaryRestoreError, DictionarySnapshot, DictionaryStorageError, FORMAT_VERSION,
+                MAGIC,
+            },
         },
     };
 
@@ -650,6 +753,114 @@ mod test {
 
         let snapshot = DictionarySnapshot::capture(&dictionary, [id, id, id]);
         assert_eq!(snapshot.len(), 1);
+    }
+
+    #[test]
+    fn replaying_reproduces_every_id() {
+        // Sub-dictionary types are interleaved so that block-allocation order
+        // matters: if replay got the order wrong, the blocks would differ.
+        let mut original = MetaDvDictionary::new();
+        let mut ids = Vec::new();
+
+        for value in [
+            AnyDataValue::new_iri("http://example.org/a".to_string()),
+            AnyDataValue::new_plain_string("first".to_string()),
+            AnyDataValue::new_iri("http://example.org/b".to_string()),
+            AnyDataValue::new_boolean(true),
+            AnyDataValue::new_language_tagged_string("x".to_string(), "en".to_string()),
+            AnyDataValue::new_plain_string("second".to_string()),
+            AnyDataValue::new_iri("http://example.org/c".to_string()),
+        ] {
+            ids.push(original.add_datavalue(value).value());
+        }
+
+        let snapshot = DictionarySnapshot::capture(&original, ids.iter().copied());
+
+        let mut replayed = MetaDvDictionary::new();
+        snapshot.restore_into(&mut replayed).expect("replay");
+
+        for (id, value) in snapshot.iter() {
+            assert_eq!(
+                replayed.id_to_datavalue(id).as_ref(),
+                Some(value),
+                "id {id} should resolve to the same value after replay"
+            );
+        }
+    }
+
+    #[test]
+    fn replaying_mints_nulls_rather_than_adding_them() {
+        // add_datavalue on an existing null is rejected, so a naive replay would
+        // assign NONEXISTING_ID_MARK and every trie referring to the null would
+        // become uninterpretable.
+        let mut original = MetaDvDictionary::new();
+        let iri = original
+            .add_datavalue(AnyDataValue::new_iri("http://example.org/a".to_string()))
+            .value();
+        let (first_null, first_id) = original.fresh_null();
+        let (second_null, second_id) = original.fresh_null();
+
+        let snapshot = DictionarySnapshot::capture(&original, [iri, first_id, second_id]);
+
+        let mut replayed = MetaDvDictionary::new();
+        snapshot.restore_into(&mut replayed).expect("replay");
+
+        assert_eq!(replayed.id_to_datavalue(first_id), Some(first_null));
+        assert_eq!(replayed.id_to_datavalue(second_id), Some(second_null));
+    }
+
+    #[test]
+    fn replaying_into_a_used_dictionary_is_refused() {
+        let mut original = MetaDvDictionary::new();
+        let id = original
+            .add_datavalue(AnyDataValue::new_iri("http://example.org/a".to_string()))
+            .value();
+        let snapshot = DictionarySnapshot::capture(&original, [id]);
+
+        // Anything already present shifts the ids that follow, so this cannot be
+        // allowed to proceed and silently renumber.
+        let mut occupied = MetaDvDictionary::new();
+        occupied.add_datavalue(AnyDataValue::new_iri("http://example.org/z".to_string()));
+
+        assert!(matches!(
+            snapshot.restore_into(&mut occupied),
+            Err(DictionaryRestoreError::NotEmpty { existing: 1 })
+        ));
+    }
+
+    #[test]
+    fn replaying_a_gapped_snapshot_is_detected() {
+        // A snapshot holding only *some* of a sub-dictionary's ids cannot be
+        // replayed: the missing values would have occupied those slots. The
+        // mismatch has to surface rather than being papered over.
+        let mut original = MetaDvDictionary::new();
+        let ids: Vec<usize> = ["a", "b", "c"]
+            .iter()
+            .map(|name| {
+                original
+                    .add_datavalue(AnyDataValue::new_iri(format!("http://example.org/{name}")))
+                    .value()
+            })
+            .collect();
+
+        // Drop the middle id, leaving a hole.
+        let gapped = DictionarySnapshot::capture(&original, [ids[0], ids[2]]);
+
+        let mut replayed = MetaDvDictionary::new();
+        assert!(matches!(
+            gapped.restore_into(&mut replayed),
+            Err(DictionaryRestoreError::IdMismatch { .. })
+        ));
+    }
+
+    #[test]
+    fn replaying_an_empty_snapshot_is_a_no_op() {
+        let mut dictionary = MetaDvDictionary::new();
+        DictionarySnapshot::default()
+            .restore_into(&mut dictionary)
+            .expect("replay");
+
+        assert!(dictionary.is_empty());
     }
 
     #[test]

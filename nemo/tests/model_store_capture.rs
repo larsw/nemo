@@ -16,7 +16,9 @@ use std::{
 
 use assert_fs::TempDir;
 use nemo::{
-    api::{load, reason},
+    api::{load, load_program_handle, reason},
+    execution::ExecutionEngine,
+    io::{ImportManager, resource_providers::ResourceProviders},
     model_store::{CacheKey, ImportFingerprint, ModelStore},
 };
 
@@ -234,5 +236,99 @@ async fn capturing_twice_refuses_rather_than_overwriting() {
             .write_model_store(&path, BTreeMap::new(), Vec::new())
             .await
             .is_err()
+    );
+}
+
+/// Restore an engine from `store` for the same program, without re-importing.
+async fn restored_engine(store: &ModelStore) -> nemo::api::Engine {
+    // The same transform pipeline `load` uses, so the normalized program -- and
+    // therefore the rule indices `rule_history` refers to -- is identical.
+    let handle =
+        load_program_handle(PROGRAM.to_string(), String::default()).expect("program should load");
+
+    // Empty resource providers: a restored engine must not read the sources
+    // again, and giving it no way to do so proves it does not try.
+    let import_manager = ImportManager::new(ResourceProviders::empty());
+
+    ExecutionEngine::from_model_store(handle, import_manager, store)
+        .await
+        .expect("store should restore")
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn a_restored_engine_holds_the_same_facts() {
+    let (_temp, path) = captured_store().await;
+    let store = ModelStore::open(&path).expect("store should open");
+
+    let _guard = engine_lock();
+    let mut restored = restored_engine(&store).await;
+
+    // Recomputed independently, to compare against rather than trusting the
+    // store's own account of itself.
+    let rules = path.parent().expect("parent").join("program.rls");
+    let mut computed = load(rules).await.expect("program should load");
+    reason(&mut computed)
+        .await
+        .expect("reasoning should succeed");
+
+    for predicate in ["edge", "path", "named", "labelled"] {
+        let tag = nemo::rule_model::components::tag::Tag::new(predicate.to_string());
+
+        let mut expected: Vec<String> = computed
+            .predicate_rows(&tag)
+            .await
+            .expect("rows")
+            .expect("predicate should exist")
+            .map(|row| format!("{row:?}"))
+            .collect();
+
+        let mut actual: Vec<String> = restored
+            .predicate_rows(&tag)
+            .await
+            .expect("rows")
+            .expect("predicate should exist")
+            .map(|row| format!("{row:?}"))
+            .collect();
+
+        expected.sort();
+        actual.sort();
+
+        assert_eq!(
+            actual, expected,
+            "{predicate} should hold the same facts after restoring"
+        );
+    }
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn a_restored_engine_can_explain_what_it_holds() {
+    // The real test of the design. Explaining needs the per-step subtables *and*
+    // rule_history: find_table_row recovers the step a fact was derived in and
+    // rule_history[step] names the rule. If either failed to survive the round
+    // trip, facts would still be present but unexplainable -- which is the entire
+    // problem the store exists to solve.
+    let (_temp, path) = captured_store().await;
+    let store = ModelStore::open(&path).expect("store should open");
+
+    let _guard = engine_lock();
+    let mut restored = restored_engine(&store).await;
+
+    let fact =
+        nemo::rule_model::components::fact::Fact::parse("path(1, 4)").expect("fact should parse");
+
+    let (trace, handles) = restored
+        .trace_facts(vec![fact])
+        .await
+        .expect("tracing should succeed");
+
+    let handle = *handles.first().expect("one handle per traced fact");
+    let tree = trace
+        .tree(handle)
+        .expect("path(1, 4) is derived, so it should have a derivation tree");
+
+    // Derived through the recursive rule, so the tree is more than a lone leaf.
+    assert!(
+        tree.node_count() > 1,
+        "a derived fact should have a non-trivial derivation tree"
     );
 }

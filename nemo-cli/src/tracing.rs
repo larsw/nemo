@@ -27,6 +27,18 @@ pub(crate) fn parse_trace_facts(cli: &CliApp) -> Result<Vec<String>, Error> {
     Ok(facts)
 }
 
+/// Whether any tracing was requested on the command line.
+///
+/// Lets the caller time the tracing phase and report it, without paying for a
+/// timer or a report line on the runs that do no tracing at all.
+pub(crate) fn tracing_requested(cli: &CliApp) -> bool {
+    cli.tracing.trace_all_idb_facts
+        || cli.tracing.facts.is_some()
+        || cli.tracing.input_file.is_some()
+        || cli.tracing_tree.trace_tree_json.is_some()
+        || cli.tracing_node.trace_node_json.is_some()
+}
+
 /// Handle all tracing-related options specified on the command line.
 pub(crate) async fn handle_tracing(
     cli: &CliApp,

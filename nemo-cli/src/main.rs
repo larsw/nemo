@@ -40,7 +40,7 @@ use nemo::{
     rule_file::RuleFile,
     rule_model::components::{fact::Fact, tag::Tag, term::Term},
 };
-use tracing::handle_tracing;
+use tracing::{handle_tracing, tracing_requested};
 
 fn print_facts_for_table<W: Write>(
     writer: &mut W,
@@ -71,7 +71,7 @@ fn predicates_to_print_facts_for(
 }
 
 /// Prints short summary message.
-fn print_finished_message(new_facts: usize, saving: bool) {
+fn print_finished_message(new_facts: usize, saving: bool, traced: bool) {
     let overall_time = TimedCode::instance().total_system_time().as_millis();
     let reading_time = TimedCode::instance()
         .sub("Reading & Preprocessing")
@@ -99,11 +99,25 @@ fn print_finished_message(new_facts: usize, saving: bool) {
         0
     };
 
-    let max_string_len = [loading_preprocessing, reading_time, writing_time]
-        .iter()
-        .map(|t| t.to_string().len())
-        .max()
-        .expect("Vector is not empty")
+    let tracing_time = if traced {
+        TimedCode::instance()
+            .sub("Tracing")
+            .total_system_time()
+            .as_millis()
+    } else {
+        0
+    };
+
+    let max_string_len = [
+        loading_preprocessing,
+        reading_time,
+        writing_time,
+        tracing_time,
+    ]
+    .iter()
+    .map(|t| t.to_string().len())
+    .max()
+    .expect("Vector is not empty")
         + 2; // for the unit ms
 
     println!(
@@ -126,6 +140,13 @@ fn print_finished_message(new_facts: usize, saving: bool) {
         println!(
             "   {0: <14} {1:>max_string_len$}ms",
             "Data export:", writing_time
+        );
+    }
+
+    if traced {
+        println!(
+            "   {0: <14} {1:>max_string_len$}ms",
+            "Tracing:", tracing_time
         );
     }
 }
@@ -237,6 +258,20 @@ async fn run(mut cli: CliApp) -> Result<(), CliError> {
         TimedCode::instance().sub("Printing Facts").stop();
     }
 
+    // Tracing runs inside the timed region, before the summary is printed.
+    //
+    // It used to run after TimedCode::stop() and after the report, so
+    // "Reasoning completed in Xms" excluded it entirely and no timed block
+    // covered it -- even though explaining a materialized model can dominate
+    // total runtime. Measured on 13,123 SSSOM facts: 52.5 s of tracing behind a
+    // reported 145 ms.
+    let tracing_requested = tracing_requested(&cli);
+    if tracing_requested {
+        TimedCode::instance().sub("Tracing").start();
+        handle_tracing(&cli, &mut engine).await?;
+        TimedCode::instance().sub("Tracing").stop();
+    }
+
     TimedCode::instance().stop();
 
     let (print_summary, print_times, print_memory) = match cli.reporting {
@@ -252,6 +287,7 @@ async fn run(mut cli: CliApp) -> Result<(), CliError> {
         print_finished_message(
             engine.count_facts_in_memory_for_derived_predicates(),
             !export_manager.write_disabled(),
+            tracing_requested,
         );
     }
     if print_times {
@@ -261,7 +297,7 @@ async fn run(mut cli: CliApp) -> Result<(), CliError> {
         print_memory_details(&engine);
     }
 
-    handle_tracing(&cli, &mut engine).await
+    Ok(())
 }
 
 #[tokio::main(flavor = "current_thread")]

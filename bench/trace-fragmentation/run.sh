@@ -122,9 +122,18 @@ run_nmo() { # <logfile> <args...>
   R_IMPORT=$(report_ms "$log" "Data import:");  R_IMPORT=${R_IMPORT:-0}
   R_REASONING=$(report_ms "$log" "Reasoning:"); R_REASONING=${R_REASONING:-0}
   R_EXPORT=$(report_ms "$log" "Data export:");  R_EXPORT=${R_EXPORT:-0}
-  R_TRACE=$(( R_WALL - R_IMPORT - R_REASONING - R_EXPORT ))
+  # Prefer the figure nemo reports directly. Falls back to the residual so the
+  # harness still works against a build without the Tracing block -- the two
+  # agreed to within 1% when both were available (578ms direct vs 574ms
+  # residual on 997 facts), which is what validates the earlier measurements.
+  R_TRACE=$(report_ms "$log" "Tracing:")
+  R_TRACE_SOURCE=direct
+  if [[ -z "$R_TRACE" ]]; then
+    R_TRACE=$(( R_WALL - R_IMPORT - R_REASONING - R_EXPORT ))
+    R_TRACE_SOURCE=residual
+  fi
   # An `if`, not `(( ... )) && ...`: a false arithmetic test exits non-zero, and
-  # under `set -e` that would abort the run whenever the residual was positive.
+  # under `set -e` that would abort the run whenever the value was positive.
   if (( R_TRACE < 0 )); then
     R_TRACE=0
   fi

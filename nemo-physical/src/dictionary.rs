@@ -34,5 +34,7 @@ pub(crate) mod tuple_dv_dict;
 
 pub mod meta_dv_dict;
 
+pub mod storage;
+
 #[cfg(feature = "old_dictionaries")]
 pub mod old_dictionaries;

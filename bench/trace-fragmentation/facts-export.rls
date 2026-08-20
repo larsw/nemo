@@ -1,0 +1,14 @@
+% Overlay rule file, passed to nmo alongside sssom-chain.rls.
+%
+% Its only purpose is to emit the traced predicate in a strictly line-oriented
+% format. N-Triples writes exactly one `<s> <p> <o> .` per line, which is what
+% makes `split -n l/K` a valid way to cut the fact list into contiguous ranges.
+% The verbatim program's own `turtle` export is kept, but Turtle serializers may
+% group statements by subject with `;` continuations, so it is not safe to parse
+% line by line.
+%
+% Nothing here participates in inference: no rule, no import. Keeping it in a
+% separate file is what lets sssom-chain.rls stay byte-identical to the program
+% reported in knowsys/nemo#763.
+
+@export inferredMapping :- ntriples{resource = $factsfile} .

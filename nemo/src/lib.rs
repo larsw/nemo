@@ -26,6 +26,7 @@ pub mod api;
 pub mod error;
 pub mod execution;
 pub mod io;
+pub mod model_store;
 pub mod parser;
 pub mod rule_file;
 pub mod rule_model;

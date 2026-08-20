@@ -29,6 +29,17 @@ pub enum CliError {
         /// Error from json parsing
         error: String,
     },
+    /// Sharded explanation was requested without a destination for the shards.
+    #[error("--explain requires --explain-output: a shard's value is the document it writes")]
+    MissingExplainOutput,
+    /// Some explanation shards failed.
+    #[error("{failed} of {total} explanation shard(s) failed; the result is incomplete")]
+    ExplainShardsFailed {
+        /// Number of shards that failed.
+        failed: usize,
+        /// Number of shards in total.
+        total: usize,
+    },
     /// Invalid paramater
     #[error("invalid parameter: {parameter}")]
     InvalidParameter {

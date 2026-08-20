@@ -587,23 +587,6 @@ fn decode_value(reader: &mut Cursor<'_>) -> Result<AnyDataValue, DictionaryStora
 
 #[cfg(test)]
 mod test {
-    /// Convenience for the tests: replay a snapshot into `self`.
-    trait PipeRestore {
-        fn pipe_restore(
-            &mut self,
-            snapshot: &super::DictionarySnapshot,
-        ) -> Result<(), super::DictionaryRestoreError>;
-    }
-
-    impl<Dict: super::DvDict> PipeRestore for Dict {
-        fn pipe_restore(
-            &mut self,
-            snapshot: &super::DictionarySnapshot,
-        ) -> Result<(), super::DictionaryRestoreError> {
-            snapshot.restore_into(self)
-        }
-    }
-
     use crate::{
         datavalues::AnyDataValue,
         dictionary::{
@@ -851,8 +834,8 @@ mod test {
         // Reproducing what came first makes the replay line up.
         let mut faithful = MetaDvDictionary::new();
         faithful.add_datavalue(AnyDataValue::new_plain_string("a constant".to_string()));
-        faithful
-            .pipe_restore(&snapshot)
+        snapshot
+            .restore_into(&mut faithful)
             .expect("replay should succeed once the prefix is reproduced");
 
         assert_eq!(

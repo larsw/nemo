@@ -171,6 +171,48 @@ pub(crate) struct TracingArgs {
     /// File to export the trace to
     #[arg(long = "trace-output", requires = "trace-input")]
     pub(crate) output_file: Option<PathBuf>,
+
+    /// Explain the facts of this predicate, sharded across worker processes.
+    ///
+    /// Requires --cache-dir: each worker restores the model from the cache rather
+    /// than re-deriving it, which is the point of sharding at all.
+    #[arg(long = "explain", requires = "cache_dir")]
+    pub(crate) explain_predicate: Option<String>,
+
+    /// Number of worker processes to explain with.
+    #[arg(
+        long = "explain-workers",
+        default_value = "1",
+        requires = "explain_predicate"
+    )]
+    pub(crate) explain_workers: usize,
+
+    /// Directory the workers write their trace shards into.
+    #[arg(long = "explain-output", requires = "explain_predicate")]
+    pub(crate) explain_output: Option<PathBuf>,
+
+    /// Internal: explain only rows [START, START+COUNT) of --explain.
+    ///
+    /// Set by the controller on the workers it spawns. Hidden because it is part
+    /// of how the CLI talks to itself, not part of its contract with users.
+    #[arg(long = "explain-range", hide = true, value_parser = parse_range)]
+    pub(crate) explain_range: Option<(usize, usize)>,
+}
+
+/// Parse a `START:COUNT` row range.
+fn parse_range(argument: &str) -> Result<(usize, usize), String> {
+    let (start, count) = argument
+        .split_once(':')
+        .ok_or_else(|| format!("expected START:COUNT, got {argument}"))?;
+
+    Ok((
+        start
+            .parse()
+            .map_err(|_| format!("invalid range start: {start}"))?,
+        count
+            .parse()
+            .map_err(|_| format!("invalid range count: {count}"))?,
+    ))
 }
 
 /// Cli arguments related to type 1 tracing

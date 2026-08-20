@@ -18,6 +18,7 @@
 
 pub mod cli;
 pub mod error;
+pub mod explain;
 pub mod tracing;
 
 use std::{io::Write, io::stdout};
@@ -239,7 +240,7 @@ async fn run(mut cli: CliApp) -> Result<(), CliError> {
     }
 
     let program_path = cli.rules.pop().ok_or(CliError::NoInput)?;
-    let program_file = RuleFile::load(program_path)?;
+    let program_file = RuleFile::load(program_path.clone())?;
 
     let export_manager = cli.output.export_manager()?;
     let import_manager = ImportManager::new(ResourceProviders::with_base_path(
@@ -364,6 +365,47 @@ async fn run(mut cli: CliApp) -> Result<(), CliError> {
 
         TimedCode::instance().sub("Printing Facts").stop();
     }
+
+    // Explanation, sharded or not, comes before tracing and reporting.
+    //
+    // A worker explains only the range it was given. A controller has just
+    // materialized (or restored) the model, so the cache is warm for the children
+    // it spawns -- which is what makes sharding worth anything.
+    let mut explained = None;
+
+    if let Some(predicate) = cli.tracing.explain_predicate.clone() {
+        TimedCode::instance().sub("Tracing").start();
+
+        match cli.tracing.explain_range {
+            Some(range) => {
+                explain::run_worker(&cli, &mut engine, &predicate, range).await?;
+            }
+            None => {
+                let tag = Tag::new(predicate.clone());
+                let total = engine
+                    .count_facts_in_memory_for_predicate(&tag)
+                    .unwrap_or_default();
+
+                let output_directory = cli
+                    .tracing
+                    .explain_output
+                    .clone()
+                    .ok_or(CliError::MissingExplainOutput)?;
+
+                explained = Some(explain::run_controller(
+                    &cli,
+                    &program_path,
+                    &predicate,
+                    total,
+                    &output_directory,
+                )?);
+            }
+        }
+
+        TimedCode::instance().sub("Tracing").stop();
+    }
+
+    let _ = explained;
 
     // Tracing runs inside the timed region, before the summary is printed.
     //

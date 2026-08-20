@@ -244,6 +244,47 @@ impl<Strategy: RuleSelectionStrategy> ExecutionEngine<Strategy> {
         Ok((trace, handles))
     }
 
+    /// Trace a contiguous range of a predicate's facts.
+    ///
+    /// The unit of work for a sharded explanation run. A range rather than a list
+    /// of facts because `predicate_rows` iterates the combined trie in
+    /// `ColumnOrder::default()` — that is, in sorted order — so a contiguous
+    /// range of rows is a contiguous range of leading values. Neighbouring facts
+    /// therefore share much of their derivation, and the memo `ExecutionTrace`
+    /// carries across a batch stays effective; a task descriptor is three numbers
+    /// rather than a shipped fact list.
+    ///
+    /// `start` beyond the end of the predicate yields an empty trace rather than
+    /// an error, so a caller may split a count it has not re-checked.
+    pub async fn trace_predicate_range(
+        &mut self,
+        predicate: &Tag,
+        start: usize,
+        count: usize,
+    ) -> Result<(ExecutionTrace, Vec<TraceFactHandle>), Error> {
+        let mut trace = ExecutionTrace::new(self.program_handle.clone());
+
+        let Some(rows) = self.predicate_rows(predicate).await? else {
+            return Ok((trace, Vec::new()));
+        };
+
+        let ground_facts = rows
+            .skip(start)
+            .take(count)
+            .map(|values| {
+                GroundAtom::new(predicate.clone(), values.into_iter().map(GroundTerm::new))
+            })
+            .collect::<Vec<_>>();
+
+        log::info!(
+            "Tracing {} facts of {predicate} from offset {start}",
+            ground_facts.len()
+        );
+
+        let handles = self.trace_ground_facts(&mut trace, &ground_facts).await?;
+        Ok((trace, handles))
+    }
+
     /// Build an `ExecutionTrace` for a list of [ground
     /// facts](GroundAtom). Also return a list with the
     /// `TraceFactHandle` for each fact.

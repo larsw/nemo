@@ -113,8 +113,21 @@ impl SubtableHandler {
     }
 
     pub fn subtable(&self, step: usize) -> Option<PermanentTableId> {
-        let postion = *self.single_steps().find(|&&s| s == step)?;
-        Some(self.single[postion].1)
+        // Searched by step and returned directly, rather than using the found
+        // step as an index. Steps are ascending but not contiguous -- a predicate
+        // is not updated at every step -- so a step is not its own position, and
+        // indexing by it returned the wrong table or panicked. Reachable only
+        // through add_reference, which is currently dead code, so this was
+        // latent.
+        self.single
+            .iter()
+            .find(|(subtable_step, _)| *subtable_step == step)
+            .map(|(_, id)| *id)
+    }
+
+    /// The `(step, table)` pairs this predicate was built from, ascending.
+    pub fn subtables(&self) -> &[(usize, PermanentTableId)] {
+        &self.single
     }
 
     pub fn count_rows_in_memory(&self, database: &DatabaseInstance) -> usize {
@@ -359,6 +372,34 @@ impl TableManager {
     /// Return a mutbale reference to the [DatabaseInstance].
     pub(crate) fn database_mut(&mut self) -> &mut DatabaseInstance {
         &mut self.database
+    }
+
+    /// Every predicate's per-step subtables, ordered by predicate name.
+    ///
+    /// What a persisted model records: provenance is recovered from which step a
+    /// fact's subtable belongs to, so the per-step layout has to survive rather
+    /// than being merged away.
+    ///
+    /// Sorted rather than yielded in `HashMap` order, so that capturing the same
+    /// model twice produces byte-identical output. Without that a store cannot be
+    /// content-addressed.
+    pub(crate) fn subtables_by_predicate(
+        &self,
+    ) -> Vec<(Tag, usize, Vec<(usize, PermanentTableId)>)> {
+        let mut result: Vec<_> = self
+            .predicate_subtables
+            .iter()
+            .map(|(predicate, handler)| {
+                (
+                    predicate.clone(),
+                    self.arity(predicate),
+                    handler.subtables().to_vec(),
+                )
+            })
+            .collect();
+
+        result.sort_by(|(left, _, _), (right, _, _)| left.to_string().cmp(&right.to_string()));
+        result
     }
 
     /// Return a reference to the [DatabaseInstance].

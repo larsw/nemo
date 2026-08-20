@@ -143,6 +143,19 @@ impl DatabaseInstance {
         self.reference_manager.table_size_bytes(id)
     }
 
+    /// The [Trie] for a table that is already loaded, if it is.
+    ///
+    /// Returns `None` rather than loading, because loading needs `&mut self`;
+    /// call [DatabaseInstance::load_trie_into_memory] first. Used to encode a
+    /// materialized table for persistence.
+    pub fn trie_inmemory(&self, id: PermanentTableId) -> Option<&Trie> {
+        let storage_id = self
+            .reference_manager
+            .trie_id_inmemory(id, ColumnOrder::default())?;
+
+        Some(self.reference_manager.trie(storage_id))
+    }
+
     /// Return the number of in-memory rows contained in this table.
     pub fn count_rows_in_memory(&self, id: PermanentTableId) -> usize {
         self.reference_manager.count_rows_in_memory(id)

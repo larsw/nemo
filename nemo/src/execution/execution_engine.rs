@@ -1,11 +1,17 @@
 //! Functionality which handles the execution of a program
 
-use std::collections::{HashMap, HashSet};
+use std::{
+    collections::{BTreeMap, HashMap, HashSet},
+    path::{Path, PathBuf},
+};
 
 use nemo_physical::{
     datavalues::AnyDataValue,
-    dictionary::DvDict,
-    management::database::sources::{SimpleTable, TableSource},
+    dictionary::{DvDict, storage::DictionarySnapshot},
+    management::{
+        database::sources::{SimpleTable, TableSource},
+        execution_plan::ColumnOrder,
+    },
     meta::timing::TimedCode,
 };
 
@@ -15,6 +21,7 @@ use crate::{
         normalization::program::NormalizedProgram, strategy::forward::StrategyForward,
     },
     io::{formats::Export, import_manager::ImportManager},
+    model_store::{CacheKey, ImportFingerprint, ModelStoreWriter},
     rule_file::RuleFile,
     rule_model::{
         components::tag::Tag, pipeline::transformations::default::TransformationDefault,
@@ -342,6 +349,83 @@ impl<Strategy: RuleSelectionStrategy> ExecutionEngine<Strategy> {
         TimedCode::instance().sub("Reasoning/Execution").stop();
 
         Ok(())
+    }
+
+    /// Write the materialized model to a store at `path`.
+    ///
+    /// Captures what explaining a fact needs, which is more than the final
+    /// relations: one encoded trie per `(predicate, step)` subtable, the
+    /// `rule_history` naming the rule that fired at each step, and the `id ->
+    /// datavalue` mapping the tries' storage ids refer to. `path` must not exist.
+    ///
+    /// The program text of the cache key comes from the engine, which knows it.
+    /// `parameters` and `imports` come from the caller, because only the caller
+    /// knows the bindings the program was run with and how to fingerprint the
+    /// resources it read.
+    ///
+    /// A failure part-way through abandons the staging directory rather than
+    /// leaving it behind, so a store never exists in a half-written state.
+    pub async fn write_model_store(
+        &mut self,
+        path: impl AsRef<Path>,
+        parameters: BTreeMap<String, String>,
+        imports: Vec<ImportFingerprint>,
+    ) -> Result<PathBuf, Error> {
+        let mut writer = ModelStoreWriter::create(path)?;
+
+        match self.capture_into(&mut writer).await {
+            Ok(referenced_ids) => {
+                let snapshot = DictionarySnapshot::capture(
+                    &*self.table_manager.database().dictionary(),
+                    referenced_ids,
+                );
+                writer.write_dictionary(&snapshot)?;
+
+                let key = CacheKey::new(self.program.to_string(), parameters, imports);
+                Ok(writer.finish(key, self.rule_history.clone())?)
+            }
+            Err(error) => {
+                // Best effort: the capture failure is what the caller needs to
+                // see, so a failure to clean up must not replace it.
+                let _ = writer.abandon();
+                Err(error)
+            }
+        }
+    }
+
+    /// Write every subtable into `writer`, returning the dictionary ids they use.
+    async fn capture_into(
+        &mut self,
+        writer: &mut ModelStoreWriter,
+    ) -> Result<HashSet<usize>, Error> {
+        let mut referenced_ids = HashSet::new();
+
+        for (predicate, arity, subtables) in self.table_manager.subtables_by_predicate() {
+            for (step, table_id) in subtables {
+                // Subtables can still be unloaded sources, and encoding needs the
+                // trie. Loading takes `&mut`, so it finishes before the shared
+                // borrow used to read the trie back out.
+                self.table_manager
+                    .database_mut()
+                    .load_trie_into_memory(table_id, ColumnOrder::default())
+                    .await?;
+
+                let Some(trie) = self.table_manager.database().trie_inmemory(table_id) else {
+                    // Unreachable in practice: the load above just succeeded.
+                    // Skipping rather than panicking keeps a partially reusable
+                    // store from taking the whole run down.
+                    log::warn!(
+                        "subtable {predicate}@{step} vanished between loading and encoding; skipping"
+                    );
+                    continue;
+                };
+
+                referenced_ids.extend(trie.referenced_dictionary_ids());
+                writer.write_table(&predicate.to_string(), arity, step, trie)?;
+            }
+        }
+
+        Ok(referenced_ids)
     }
 
     /// Get a reference to the loaded program.

@@ -50,6 +50,20 @@ pub struct Trie {
 }
 
 impl Trie {
+    /// The dictionary ids this trie references.
+    ///
+    /// Exactly what a persisted model has to capture alongside the trie: the
+    /// stored values are dictionary-relative ids, so an encoded trie is
+    /// meaningless without them. Yields only the ids of the `Id32` and `Id64`
+    /// columns, because no other storage type is dictionary-backed.
+    ///
+    /// Ids may repeat; callers that build a lookup deduplicate anyway.
+    pub fn referenced_dictionary_ids(&self) -> impl Iterator<Item = usize> + '_ {
+        self.columns
+            .iter()
+            .flat_map(|column| column.dictionary_ids())
+    }
+
     /// Return the arity, that is the number of columns, in this trie.
     pub fn arity(&self) -> usize {
         self.columns.len()

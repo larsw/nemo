@@ -30,6 +30,9 @@ pub enum Error {
     /// Error occurred during tracing
     #[error(transparent)]
     TracingError(#[from] TracingError),
+    /// Error reading or writing a persisted model
+    #[error(transparent)]
+    ModelStore(#[from] crate::model_store::ModelStoreError),
     /// IO Error
     #[error(transparent)]
     IO(#[from] std::io::Error),

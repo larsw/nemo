@@ -57,6 +57,11 @@ where
     T: ColumnDataType,
     LookupMethod: IntervalLookup,
 {
+    /// The values stored in this column.
+    pub(crate) fn data(&self) -> &ColumnEnum<T> {
+        &self.data
+    }
+
     pub(crate) fn interval_bounds(
         &self,
         storage_type: StorageTypeName,
@@ -119,6 +124,19 @@ impl<LookupMethod> IntervalColumnT<LookupMethod>
 where
     LookupMethod: IntervalLookup,
 {
+    /// Dictionary ids referenced by this layer.
+    ///
+    /// Only the `Id32` and `Id64` sub-columns: every other storage type carries
+    /// its value directly and is never dictionary-backed. See
+    /// [crate::dictionary::storage] for the measurement behind that.
+    pub(crate) fn dictionary_ids(&self) -> impl Iterator<Item = usize> + '_ {
+        self.column_id32
+            .data()
+            .iter()
+            .map(|id| id as usize)
+            .chain(self.column_id64.data().iter().map(|id| id as usize))
+    }
+
     /// Create a new [IntervalColumnT].
     pub(crate) fn new(
         column_id32: IntervalColumn<u32, LookupMethod>,

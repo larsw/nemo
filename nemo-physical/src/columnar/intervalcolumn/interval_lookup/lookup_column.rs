@@ -98,6 +98,35 @@ impl IntervalLookupBuilder for IntervalLookupColumnBuilder {
     }
 }
 
+/// Encoding of a single interval lookup.
+///
+/// `simple` is stored rather than recomputed: it is derived during building from
+/// the order calls arrive in, which the encoding does not preserve.
+mod storage {
+    use crate::{
+        columnar::intervalcolumn::interval_lookup::lookup_column::IntervalLookupColumn,
+        tabular::trie::storage::{
+            DecodeFrom, EncodeInto, Reader, TrieStorageError, Writer, decode_column, encode_column,
+        },
+    };
+
+    impl EncodeInto for IntervalLookupColumn {
+        fn encode_into(&self, writer: &mut Writer) {
+            writer.flag(self.simple);
+            encode_column(&self.lookup, writer);
+        }
+    }
+
+    impl DecodeFrom for IntervalLookupColumn {
+        fn decode_from(reader: &mut Reader<'_>) -> Result<Self, TrieStorageError> {
+            let simple = reader.flag()?;
+            let lookup = decode_column(reader)?;
+
+            Ok(Self { lookup, simple })
+        }
+    }
+}
+
 #[cfg(test)]
 mod test {
     use crate::columnar::{

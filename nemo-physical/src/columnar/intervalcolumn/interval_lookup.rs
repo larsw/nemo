@@ -144,3 +144,41 @@ where
         }
     }
 }
+
+/// Encoding of the per-storage-type interval lookups.
+///
+/// Fixed order, matching [IntervalColumnT]'s sub-columns.
+mod storage {
+    use crate::{
+        columnar::intervalcolumn::interval_lookup::{IntervalLookup, IntervalLookupT},
+        tabular::trie::storage::{DecodeFrom, EncodeInto, Reader, TrieStorageError, Writer},
+    };
+
+    impl<L> EncodeInto for IntervalLookupT<L>
+    where
+        L: IntervalLookup + EncodeInto,
+    {
+        fn encode_into(&self, writer: &mut Writer) {
+            self.lookup_id32.encode_into(writer);
+            self.lookup_id64.encode_into(writer);
+            self.lookup_int64.encode_into(writer);
+            self.lookup_float.encode_into(writer);
+            self.lookup_double.encode_into(writer);
+        }
+    }
+
+    impl<L> DecodeFrom for IntervalLookupT<L>
+    where
+        L: IntervalLookup + DecodeFrom,
+    {
+        fn decode_from(reader: &mut Reader<'_>) -> Result<Self, TrieStorageError> {
+            Ok(Self {
+                lookup_id32: L::decode_from(reader)?,
+                lookup_id64: L::decode_from(reader)?,
+                lookup_int64: L::decode_from(reader)?,
+                lookup_float: L::decode_from(reader)?,
+                lookup_double: L::decode_from(reader)?,
+            })
+        }
+    }
+}

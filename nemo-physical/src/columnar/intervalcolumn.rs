@@ -690,3 +690,84 @@ mod test {
         test_builder_trie::<IntervalLookupColumn>();
     }
 }
+
+/// Encoding of a trie layer.
+///
+/// The five typed sub-columns are written in a fixed order, and the decoder
+/// reads them in the same order. Nothing in the bytes records which is which, so
+/// the two orderings here are the whole contract.
+mod storage {
+    use crate::{
+        columnar::intervalcolumn::interval_lookup::IntervalLookup,
+        columnar::intervalcolumn::{IntervalColumn, IntervalColumnT},
+        datatypes::{ColumnDataType, Double, Float},
+        tabular::trie::storage::{
+            ColumnElement, DecodeFrom, EncodeInto, Reader, TrieStorageError, Writer, decode_column,
+            encode_column,
+        },
+    };
+
+    impl<T, L> EncodeInto for IntervalColumn<T, L>
+    where
+        T: ColumnDataType + ColumnElement,
+        L: IntervalLookup + EncodeInto,
+    {
+        fn encode_into(&self, writer: &mut Writer) {
+            encode_column(&self.data, writer);
+            encode_column(&self.intervals, writer);
+            self.interval_lookup.encode_into(writer);
+        }
+    }
+
+    impl<T, L> DecodeFrom for IntervalColumn<T, L>
+    where
+        T: ColumnDataType + ColumnElement + Default,
+        L: IntervalLookup + DecodeFrom,
+    {
+        fn decode_from(reader: &mut Reader<'_>) -> Result<Self, TrieStorageError> {
+            let data = decode_column(reader)?;
+            let intervals = decode_column(reader)?;
+            let interval_lookup = DecodeFrom::decode_from(reader)?;
+
+            Ok(Self {
+                data,
+                intervals,
+                interval_lookup,
+            })
+        }
+    }
+
+    impl<L> EncodeInto for IntervalColumnT<L>
+    where
+        L: IntervalLookup + EncodeInto,
+    {
+        fn encode_into(&self, writer: &mut Writer) {
+            self.column_id32.encode_into(writer);
+            self.column_id64.encode_into(writer);
+            self.column_int64.encode_into(writer);
+            self.column_float.encode_into(writer);
+            self.column_double.encode_into(writer);
+        }
+    }
+
+    impl<L> DecodeFrom for IntervalColumnT<L>
+    where
+        L: IntervalLookup + DecodeFrom,
+    {
+        fn decode_from(reader: &mut Reader<'_>) -> Result<Self, TrieStorageError> {
+            let column_id32: IntervalColumn<u32, L> = DecodeFrom::decode_from(reader)?;
+            let column_id64: IntervalColumn<u64, L> = DecodeFrom::decode_from(reader)?;
+            let column_int64: IntervalColumn<i64, L> = DecodeFrom::decode_from(reader)?;
+            let column_float: IntervalColumn<Float, L> = DecodeFrom::decode_from(reader)?;
+            let column_double: IntervalColumn<Double, L> = DecodeFrom::decode_from(reader)?;
+
+            Ok(Self {
+                column_id32,
+                column_id64,
+                column_int64,
+                column_float,
+                column_double,
+            })
+        }
+    }
+}

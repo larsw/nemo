@@ -30,6 +30,8 @@ use super::{
     triescan::{PartialTrieScan, TrieScan, TrieScanEnum},
 };
 
+pub mod storage;
+
 /// Defines the lookup method used in [IntervalColumnT]
 type IntervalLookupMethod = IntervalLookupColumn;
 
